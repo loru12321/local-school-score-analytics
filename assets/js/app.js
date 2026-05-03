@@ -77,6 +77,8 @@
     const LOCAL_DB_NAME = 'LOCAL_SCHOOL_SCORE_ANALYTICS_DB';
     const LOCAL_DB_STORE = 'snapshots';
     const LOCAL_DB_KEY = 'latest';
+    const CLOUD_CONFIG_KEY = 'LOCAL_SCHOOL_SCORE_ANALYTICS_SUPABASE_CONFIG';
+    const CLOUD_SNAPSHOT_VERSION = 1;
     const HISTORY_LIMIT = 12;
 
     const GRADE_CONFIG = {
@@ -156,6 +158,10 @@
         selectedTeacherKey: '',
         examHistory: [],
         selectedHistoryId: '',
+        cloudConfig: { url: '', anonKey: '' },
+        cloudUser: null,
+        cloudSnapshots: [],
+        selectedCloudSnapshotId: '',
         anonymizeSalt: 'local-school',
         performanceStats: { lastAnalyzeMs: 0, studentCount: 0, subjectCount: 0 },
         charts: {},
@@ -163,10 +169,14 @@
     };
 
     const els = {};
+    let supabaseClient = null;
+    let supabaseClientKey = '';
 
     document.addEventListener('DOMContentLoaded', () => {
         cacheElements();
+        restoreCloudConfig();
         bindEvents();
+        refreshCloudUser().catch(() => renderCloudPanel());
         renderAll();
     });
 
@@ -186,7 +196,10 @@
             'student-report-card', 'export-student-report-btn',
             'teacher-explain-select', 'teacher-explain-panel',
             'export-report-btn', 'history-name', 'save-history-btn', 'history-select', 'comparison-panel',
-            'score-band-chart', 'export-html-report-btn', 'export-anonymous-btn', 'clear-local-db-btn', 'privacy-panel'
+            'score-band-chart', 'export-html-report-btn', 'export-anonymous-btn', 'clear-local-db-btn', 'privacy-panel',
+            'cloud-url', 'cloud-anon-key', 'cloud-email', 'cloud-password', 'save-cloud-config-btn',
+            'cloud-login-btn', 'cloud-logout-btn', 'cloud-sync-btn', 'cloud-refresh-btn', 'cloud-history-select',
+            'cloud-use-baseline-btn', 'cloud-restore-btn', 'cloud-status', 'cloud-panel'
         ].forEach((id) => {
             els[toCamel(id)] = document.getElementById(id);
         });
@@ -431,6 +444,19 @@
                 renderExamComparison();
             });
         }
+        if (els.saveCloudConfigBtn) els.saveCloudConfigBtn.addEventListener('click', saveCloudConfig);
+        if (els.cloudLoginBtn) els.cloudLoginBtn.addEventListener('click', loginOrRegisterCloud);
+        if (els.cloudLogoutBtn) els.cloudLogoutBtn.addEventListener('click', logoutCloud);
+        if (els.cloudSyncBtn) els.cloudSyncBtn.addEventListener('click', syncCurrentExamToCloud);
+        if (els.cloudRefreshBtn) els.cloudRefreshBtn.addEventListener('click', loadCloudSnapshots);
+        if (els.cloudHistorySelect) {
+            els.cloudHistorySelect.addEventListener('change', () => {
+                state.selectedCloudSnapshotId = els.cloudHistorySelect.value;
+                renderCloudPanel();
+            });
+        }
+        if (els.cloudUseBaselineBtn) els.cloudUseBaselineBtn.addEventListener('click', useCloudSnapshotAsBaseline);
+        if (els.cloudRestoreBtn) els.cloudRestoreBtn.addEventListener('click', restoreCloudSnapshot);
     }
 
     function switchView(id) {
@@ -2012,6 +2038,7 @@
         renderStudentReport();
         renderStudentAlerts();
         renderExamComparison();
+        renderCloudPanel();
         renderPrivacyPanel();
     }
 
@@ -2703,6 +2730,277 @@
                 `).join('')}</tbody>
             </table>
         `;
+    }
+
+    function renderCloudPanel() {
+        if (!els.cloudPanel) return;
+        if (els.cloudUrl) els.cloudUrl.value = state.cloudConfig.url || '';
+        if (els.cloudAnonKey) els.cloudAnonKey.value = state.cloudConfig.anonKey || '';
+        const configured = hasCloudConfig();
+        const connected = Boolean(state.cloudUser);
+        if (els.cloudStatus) {
+            els.cloudStatus.textContent = connected ? `已登录 ${state.cloudUser.email || ''}` : (configured ? '待登录' : '未配置');
+            els.cloudStatus.className = connected ? 'status-pill ok' : 'status-pill warn';
+        }
+        if (els.cloudHistorySelect) {
+            const keep = state.cloudSnapshots.some((item) => item.id === state.selectedCloudSnapshotId)
+                ? state.selectedCloudSnapshotId
+                : (state.cloudSnapshots[0]?.id || '');
+            state.selectedCloudSnapshotId = keep;
+            els.cloudHistorySelect.innerHTML = state.cloudSnapshots.length
+                ? state.cloudSnapshots.map((item) => `<option value="${escapeAttr(item.id)}">${escapeHtml(formatCloudSnapshotLabel(item))}</option>`).join('')
+                : '<option value="">暂无云端历史</option>';
+            els.cloudHistorySelect.value = keep;
+        }
+        const selected = state.cloudSnapshots.find((item) => item.id === state.selectedCloudSnapshotId);
+        const rows = [
+            ['配置状态', configured ? '已保存 Supabase URL 与 anon key' : '请先填写 Supabase URL 与 anon key'],
+            ['登录状态', connected ? `${state.cloudUser.email || state.cloudUser.id}` : '未登录'],
+            ['云端记录', `${state.cloudSnapshots.length} 条`],
+            ['当前选择', selected ? `${formatCloudSnapshotLabel(selected)}，学生 ${selected.student_count || 0} 人` : '无']
+        ];
+        els.cloudPanel.innerHTML = `
+            <div class="detail-grid">
+                ${rows.map((row) => detailItem(row[0], row[1])).join('')}
+            </div>
+            <div class="muted-note">云端快照按登录账号隔离；年级升级通过“届别/学年/考试日期”追踪，不另做年级入口页。</div>
+        `;
+    }
+
+    function restoreCloudConfig() {
+        try {
+            const raw = localStorage.getItem(CLOUD_CONFIG_KEY);
+            const data = raw ? JSON.parse(raw) : {};
+            state.cloudConfig = {
+                url: cleanText(data.url),
+                anonKey: cleanText(data.anonKey)
+            };
+        } catch (error) {
+            state.cloudConfig = { url: '', anonKey: '' };
+        }
+    }
+
+    function saveCloudConfig() {
+        state.cloudConfig = {
+            url: cleanText(els.cloudUrl?.value),
+            anonKey: cleanText(els.cloudAnonKey?.value)
+        };
+        supabaseClient = null;
+        supabaseClientKey = '';
+        localStorage.setItem(CLOUD_CONFIG_KEY, JSON.stringify(state.cloudConfig));
+        renderCloudPanel();
+        toast('Supabase 配置已保存在本机浏览器。', 'ok');
+    }
+
+    function hasCloudConfig() {
+        return Boolean(cleanText(state.cloudConfig.url) && cleanText(state.cloudConfig.anonKey));
+    }
+
+    function getSupabaseClient() {
+        if (!hasCloudConfig()) throw new Error('请先填写并保存 Supabase URL 与 anon key。');
+        if (!window.supabase?.createClient) throw new Error('Supabase JS 未加载，请检查网络或刷新页面。');
+        const key = `${state.cloudConfig.url}|${state.cloudConfig.anonKey}`;
+        if (!supabaseClient || supabaseClientKey !== key) {
+            supabaseClient = window.supabase.createClient(state.cloudConfig.url, state.cloudConfig.anonKey);
+            supabaseClientKey = key;
+        }
+        return supabaseClient;
+    }
+
+    async function refreshCloudUser() {
+        if (!hasCloudConfig() || !window.supabase?.createClient) {
+            renderCloudPanel();
+            return null;
+        }
+        const client = getSupabaseClient();
+        const { data, error } = await client.auth.getUser();
+        if (error) {
+            state.cloudUser = null;
+        } else {
+            state.cloudUser = data?.user || null;
+        }
+        renderCloudPanel();
+        return state.cloudUser;
+    }
+
+    async function loginOrRegisterCloud() {
+        try {
+            saveCloudConfig();
+            const email = cleanText(els.cloudEmail?.value);
+            const password = String(els.cloudPassword?.value || '');
+            if (!email || !password) return toast('请输入 Supabase 登录邮箱和密码。', 'warn');
+            const client = getSupabaseClient();
+            let { data, error } = await client.auth.signInWithPassword({ email, password });
+            if (error) {
+                const signUp = await client.auth.signUp({ email, password });
+                data = signUp.data;
+                error = signUp.error;
+            }
+            if (error) throw error;
+            state.cloudUser = data?.user || null;
+            if (!state.cloudUser) {
+                toast('注册请求已提交；如果项目开启邮箱确认，请先完成确认再登录。', 'warn');
+            } else {
+                toast('Supabase 已登录。', 'ok');
+                await loadCloudSnapshots();
+            }
+            renderCloudPanel();
+        } catch (error) {
+            toast(`Supabase 登录失败：${friendlyCloudError(error)}`, 'warn');
+            renderCloudPanel();
+        }
+    }
+
+    async function logoutCloud() {
+        try {
+            const client = getSupabaseClient();
+            await client.auth.signOut();
+            state.cloudUser = null;
+            state.cloudSnapshots = [];
+            state.selectedCloudSnapshotId = '';
+            renderCloudPanel();
+            toast('已退出 Supabase。', 'ok');
+        } catch (error) {
+            toast(`退出失败：${friendlyCloudError(error)}`, 'warn');
+        }
+    }
+
+    async function ensureCloudUser() {
+        const user = state.cloudUser || await refreshCloudUser();
+        if (!user) throw new Error('请先登录 Supabase。');
+        return user;
+    }
+
+    async function syncCurrentExamToCloud() {
+        try {
+            if (!getAnalysisStudents().length) return toast('暂无可上传的分析数据。', 'warn');
+            const user = await ensureCloudUser();
+            const client = getSupabaseClient();
+            const name = cleanText(els.historyName?.value) || `${currentConfig().label}_${dateStamp()}`;
+            const payload = buildCloudSnapshotPayload(name, user);
+            const { error } = await client.from('analysis_snapshots').insert(payload);
+            if (error) throw error;
+            toast('当前分析已上传到 Supabase 云端历史。', 'ok');
+            await loadCloudSnapshots();
+        } catch (error) {
+            toast(`上传失败：${friendlyCloudError(error)}`, 'warn');
+        }
+    }
+
+    function buildCloudSnapshotPayload(name, user) {
+        const exam = buildExamSnapshot(name);
+        const app = buildLocalSnapshot();
+        const totalMetrics = metricSummary(getAnalysisStudents().map((student) => student.total), state.thresholds.total || {}, getTotalMaxScore());
+        const examDate = new Date().toISOString().slice(0, 10);
+        return {
+            owner_id: user.id,
+            school_name: state.activeSchool || '本校',
+            grade: Number(state.grade || 9),
+            cohort_year: estimateCohortYear(state.grade, new Date()),
+            school_year: getSchoolYear(new Date()),
+            exam_name: name,
+            exam_date: examDate,
+            student_count: getAnalysisStudents().length,
+            class_count: getClasses().length,
+            subject_count: getAnalysisSubjects().length,
+            total_max: getTotalMaxScore(),
+            total_avg: totalMetrics.count ? round(totalMetrics.avg, 2) : null,
+            source: 'local-school-score-analytics',
+            snapshot: {
+                version: CLOUD_SNAPSHOT_VERSION,
+                savedAt: new Date().toISOString(),
+                exam,
+                app
+            }
+        };
+    }
+
+    async function loadCloudSnapshots() {
+        try {
+            await ensureCloudUser();
+            const client = getSupabaseClient();
+            const { data, error } = await client
+                .from('analysis_snapshots')
+                .select('id, school_name, grade, cohort_year, school_year, exam_name, exam_date, student_count, class_count, subject_count, total_max, total_avg, created_at')
+                .order('exam_date', { ascending: false })
+                .order('created_at', { ascending: false })
+                .limit(100);
+            if (error) throw error;
+            state.cloudSnapshots = Array.isArray(data) ? data : [];
+            state.selectedCloudSnapshotId = state.cloudSnapshots[0]?.id || '';
+            renderCloudPanel();
+            toast(`已读取 ${state.cloudSnapshots.length} 条云端历史。`, 'ok');
+        } catch (error) {
+            toast(`读取云端历史失败：${friendlyCloudError(error)}`, 'warn');
+            renderCloudPanel();
+        }
+    }
+
+    async function getCloudSnapshotRecord() {
+        await ensureCloudUser();
+        const id = cleanText(state.selectedCloudSnapshotId || els.cloudHistorySelect?.value);
+        if (!id) throw new Error('请选择一条云端历史。');
+        const client = getSupabaseClient();
+        const { data, error } = await client
+            .from('analysis_snapshots')
+            .select('id, exam_name, snapshot')
+            .eq('id', id)
+            .single();
+        if (error) throw error;
+        return data;
+    }
+
+    async function useCloudSnapshotAsBaseline() {
+        try {
+            const record = await getCloudSnapshotRecord();
+            const exam = record.snapshot?.exam;
+            if (!exam) throw new Error('该云端记录缺少考试快照。');
+            state.examHistory = [exam, ...state.examHistory.filter((item) => item.id !== exam.id)].slice(0, HISTORY_LIMIT);
+            state.selectedHistoryId = exam.id;
+            renderExamComparison();
+            renderCloudPanel();
+            toast(`已将“${record.exam_name}”作为历史基准。`, 'ok');
+        } catch (error) {
+            toast(`调用云端历史失败：${friendlyCloudError(error)}`, 'warn');
+        }
+    }
+
+    async function restoreCloudSnapshot() {
+        try {
+            const record = await getCloudSnapshotRecord();
+            const app = record.snapshot?.app;
+            if (!app) throw new Error('该云端记录缺少完整分析快照。');
+            applyLocalSnapshot(app);
+            toast(`已恢复云端快照：${record.exam_name}。`, 'ok');
+        } catch (error) {
+            toast(`恢复云端快照失败：${friendlyCloudError(error)}`, 'warn');
+        }
+    }
+
+    function formatCloudSnapshotLabel(item) {
+        if (!item) return '';
+        const date = item.exam_date || cleanText(item.created_at).slice(0, 10);
+        return `${date} · ${item.exam_name} · ${item.grade}年级 · ${item.cohort_year}届`;
+    }
+
+    function getSchoolYear(date = new Date()) {
+        const year = date.getFullYear();
+        const start = date.getMonth() + 1 >= 9 ? year : year - 1;
+        return `${start}-${start + 1}`;
+    }
+
+    function estimateCohortYear(grade = state.grade, date = new Date()) {
+        const year = date.getFullYear();
+        const schoolStart = date.getMonth() + 1 >= 9 ? year : year - 1;
+        return schoolStart + (10 - Number(grade || 9));
+    }
+
+    function friendlyCloudError(error) {
+        const text = cleanText(error?.message || error);
+        if (/relation .*analysis_snapshots.*does not exist/i.test(text)) return '数据库表不存在，请先在 Supabase SQL Editor 执行 supabase/migrations/20260504_school_analysis_cloud.sql。';
+        if (/row-level security|permission denied|violates row-level security/i.test(text)) return '权限策略未生效或未登录，请检查 RLS 脚本和当前账号。';
+        if (/Invalid login credentials/i.test(text)) return '邮箱或密码不正确；如刚注册且开启邮箱确认，请先确认邮件。';
+        return text || '未知错误';
     }
 
     function renderPrivacyPanel() {
@@ -4506,9 +4804,15 @@ ${htmlTable('教师解释', buildTeacherExplanationExportRows())}
         buildAnalysisGateRows,
         buildCalculationTraceRows,
         buildExamSnapshot,
+        buildCloudSnapshotPayload,
+        estimateCohortYear,
+        getSchoolYear,
         buildExamComparisonRows,
         getEvaluationWeights,
         getStudentMatchKeys,
+        loadCloudSnapshots,
+        useCloudSnapshotAsBaseline,
+        restoreCloudSnapshot,
         exportReportWorkbook,
         exportStudentReportWorkbook,
         saveCurrentExamToHistory,

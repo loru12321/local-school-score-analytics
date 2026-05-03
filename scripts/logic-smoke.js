@@ -67,6 +67,9 @@ const { chromium } = require(playwrightPath);
     state.students[0].rawScores.语文 = 130;
     api.analyze();
     const comparisonRows = api.buildExamComparisonRows();
+    const cloudPayload = api.buildCloudSnapshotPayload('云端测试', { id: '00000000-0000-0000-0000-000000000001' });
+    const cohortYear = api.estimateCohortYear(9, new Date('2026-05-04T00:00:00+08:00'));
+    const schoolYear = api.getSchoolYear(new Date('2026-05-04T00:00:00+08:00'));
 
     await new Promise((resolve, reject) => {
       const request = indexedDB.open('logic-smoke-db', 1);
@@ -99,7 +102,17 @@ const { chromium } = require(playwrightPath);
       },
       distributionLabels: distribution.map((row) => row.label),
       reportHasSubjectHeader: reportRows.some((row) => row[0] === '学科'),
-      comparisonHasStudentGain: comparisonRows.some((row) => row[0] === '学生总分' && String(row[4]).startsWith('+'))
+      comparisonHasStudentGain: comparisonRows.some((row) => row[0] === '学生总分' && String(row[4]).startsWith('+')),
+      cloudPayload: {
+        grade: cloudPayload.grade,
+        cohortYear: cloudPayload.cohort_year,
+        schoolYear: cloudPayload.school_year,
+        owner: cloudPayload.owner_id,
+        hasAppSnapshot: Boolean(cloudPayload.snapshot?.app?.students?.length),
+        hasExamSnapshot: Boolean(cloudPayload.snapshot?.exam?.students?.length)
+      },
+      cohortYear,
+      schoolYear
     };
   });
 
@@ -116,7 +129,15 @@ const { chromium } = require(playwrightPath);
     || !result.scopedTeacher.risk.includes('分组任课')
     || !result.distributionLabels.includes('语文')
     || !result.reportHasSubjectHeader
-    || !result.comparisonHasStudentGain) {
+    || !result.comparisonHasStudentGain
+    || result.cloudPayload.grade !== 9
+    || result.cloudPayload.cohortYear !== 2026
+    || result.cloudPayload.schoolYear !== '2025-2026'
+    || result.cloudPayload.owner !== '00000000-0000-0000-0000-000000000001'
+    || !result.cloudPayload.hasAppSnapshot
+    || !result.cloudPayload.hasExamSnapshot
+    || result.cohortYear !== 2026
+    || result.schoolYear !== '2025-2026') {
     throw new Error(`Logic smoke failed: ${JSON.stringify(result, null, 2)}`);
   }
   console.log(JSON.stringify({ ok: true, ...result }, null, 2));

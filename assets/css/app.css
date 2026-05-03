@@ -451,7 +451,10 @@ tbody tr:hover {
 select,
 input[type="search"],
 input[type="text"],
-input[type="number"] {
+input[type="number"],
+input[type="url"],
+input[type="email"],
+input[type="password"] {
     min-height: 38px;
     border: 1px solid var(--line);
     border-radius: 8px;
@@ -484,6 +487,22 @@ input[type="number"] {
     flex-wrap: wrap;
     align-items: center;
     margin: 0 0 12px;
+}
+
+.cloud-grid {
+    display: grid;
+    grid-template-columns: repeat(2, minmax(260px, 1fr));
+    gap: 10px;
+    margin-bottom: 12px;
+}
+
+.wide-field {
+    grid-column: span 1;
+}
+
+.cloud-grid input {
+    width: 100%;
+    min-width: 0;
 }
 
 .compact-table {
@@ -666,6 +685,7 @@ input[type="number"] {
     .detail-grid,
     .insight-grid,
     .method-grid,
+    .cloud-grid,
     .pair-list {
         grid-template-columns: 1fr;
     }

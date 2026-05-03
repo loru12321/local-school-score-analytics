@@ -4,9 +4,10 @@
     <meta charset="utf-8">
     <meta name="viewport" content="width=device-width, initial-scale=1">
     <title>校内成绩分析系统</title>
-    <link rel="stylesheet" href="assets/css/app.css?v=20260504-rural-development">
+    <link rel="stylesheet" href="assets/css/app.css?v=20260504-supabase-cloud">
     <script src="assets/vendor/xlsx/xlsx.full.min.js"></script>
     <script src="assets/vendor/chart.js/chart.umd.min.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
 </head>
 <body>
     <div class="app-shell">
@@ -429,7 +430,7 @@
                     <div class="panel-head">
                         <div>
                             <h2>临界与偏科名单</h2>
-                            <p>临界按距优秀线 / 达标线 5 分内，偏科按总分前 40% 且单科后 40%。</p>
+                            <p>临界按学科满分比例动态取线，同时筛出后 1/3 托底、潜力提升和偏科学生。</p>
                         </div>
                     </div>
                     <div class="insight-grid" id="student-alert-grid"></div>
@@ -466,6 +467,47 @@
                 <section class="panel">
                     <div class="panel-head">
                         <div>
+                            <h2>云端历史</h2>
+                            <p>连接 Supabase 后，可保存和调用本校历次分析快照。</p>
+                        </div>
+                        <span class="status-pill warn" id="cloud-status">未连接</span>
+                    </div>
+                    <div class="cloud-grid">
+                        <label class="setting-control wide-field">
+                            <span>Supabase URL</span>
+                            <input id="cloud-url" type="url" placeholder="https://xxxxx.supabase.co">
+                        </label>
+                        <label class="setting-control wide-field">
+                            <span>Anon Key</span>
+                            <input id="cloud-anon-key" type="password" placeholder="项目 anon public key">
+                        </label>
+                        <label class="setting-control">
+                            <span>邮箱</span>
+                            <input id="cloud-email" type="email" placeholder="登录邮箱">
+                        </label>
+                        <label class="setting-control">
+                            <span>密码</span>
+                            <input id="cloud-password" type="password" placeholder="登录密码">
+                        </label>
+                    </div>
+                    <div class="button-row">
+                        <button class="ghost-button" id="save-cloud-config-btn">保存配置</button>
+                        <button class="primary-button" id="cloud-login-btn">登录/注册</button>
+                        <button class="ghost-button" id="cloud-logout-btn">退出</button>
+                        <button class="primary-button" id="cloud-sync-btn">上传当前分析</button>
+                        <button class="ghost-button" id="cloud-refresh-btn">刷新云端历史</button>
+                    </div>
+                    <div class="filter-row">
+                        <select id="cloud-history-select"></select>
+                        <button class="ghost-button" id="cloud-use-baseline-btn">作为历史基准</button>
+                        <button class="ghost-button" id="cloud-restore-btn">恢复此快照</button>
+                    </div>
+                    <div id="cloud-panel" class="detail-card"></div>
+                </section>
+
+                <section class="panel">
+                    <div class="panel-head">
+                        <div>
                             <h2>隐私与留档</h2>
                             <p>清理本地数据库、导出匿名版，或生成可打印 HTML 报告。</p>
                         </div>
@@ -483,6 +525,6 @@
 
     <div class="toast-region" id="toast-region" aria-live="polite"></div>
 
-    <script src="assets/js/app.js?v=20260504-rural-development"></script>
+    <script src="assets/js/app.js?v=20260504-supabase-cloud"></script>
 </body>
 </html>
