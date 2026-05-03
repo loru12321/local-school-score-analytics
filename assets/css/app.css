@@ -474,6 +474,48 @@ input[type="number"] {
     width: 90px;
 }
 
+.weight-input {
+    width: 78px;
+}
+
+.scheme-tools {
+    display: flex;
+    gap: 10px;
+    flex-wrap: wrap;
+    align-items: center;
+    margin: 0 0 12px;
+}
+
+.compact-table {
+    margin-top: 12px;
+}
+
+.gate-list {
+    display: grid;
+    gap: 8px;
+}
+
+.gate-item {
+    display: flex;
+    justify-content: space-between;
+    gap: 12px;
+    border: 1px solid #e5edf6;
+    border-radius: 8px;
+    background: #fff;
+    padding: 9px 10px;
+    font-size: 13px;
+}
+
+.gate-item.block {
+    border-color: #fecdd3;
+    background: #fff1f2;
+}
+
+.gate-item.warn {
+    border-color: #fed7aa;
+    background: #fff7ed;
+}
+
 .small-input {
     width: 120px;
 }

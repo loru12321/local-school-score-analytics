@@ -4,8 +4,9 @@
   "private": true,
   "description": "本地校内成绩分析系统，面向 6-9 年级。",
   "scripts": {
-    "smoke": "npm run smoke:logic && npm run smoke:browser",
+    "smoke": "npm run smoke:logic && npm run smoke:browser && npm run smoke:regression",
     "smoke:logic": "node scripts/logic-smoke.js",
-    "smoke:browser": "node scripts/smoke.js"
+    "smoke:browser": "node scripts/smoke.js",
+    "smoke:regression": "node scripts/regression-smoke.js"
   }
 }

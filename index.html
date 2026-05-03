@@ -4,7 +4,7 @@
     <meta charset="utf-8">
     <meta name="viewport" content="width=device-width, initial-scale=1">
     <title>校内成绩分析系统</title>
-    <link rel="stylesheet" href="assets/css/app.css?v=20260503-full-optimization">
+    <link rel="stylesheet" href="assets/css/app.css?v=20260504-governance">
     <script src="assets/vendor/xlsx/xlsx.full.min.js"></script>
     <script src="assets/vendor/chart.js/chart.umd.min.js"></script>
 </head>
@@ -85,6 +85,18 @@
                             <canvas id="subject-radar-chart" aria-label="学科得分率雷达图"></canvas>
                         </div>
                     </section>
+
+                    <section class="panel">
+                        <div class="panel-head">
+                            <div>
+                                <h2>分数段图</h2>
+                                <p>按当前总分满分比例统计优秀、良好、及格和低分段。</p>
+                            </div>
+                        </div>
+                        <div class="chart-wrap chart-wrap-small">
+                            <canvas id="score-band-chart" aria-label="总分分数段图"></canvas>
+                        </div>
+                    </section>
                 </div>
 
                 <section class="panel">
@@ -121,6 +133,23 @@
                     <section class="panel import-panel">
                         <div class="panel-head">
                             <div>
+                                <h2>参考名单</h2>
+                                <p>可选导入学籍或参考名单，用于识别缺考、未参考和转入转出。</p>
+                            </div>
+                        </div>
+                        <label class="drop-zone" for="roster-file">
+                            <span>选择参考名单 Excel</span>
+                            <strong id="roster-file-name">未选择文件</strong>
+                        </label>
+                        <input type="file" id="roster-file" accept=".xlsx,.xls" hidden>
+                        <div class="button-row">
+                            <button class="primary-button" id="parse-roster-btn">解析名单</button>
+                        </div>
+                    </section>
+
+                    <section class="panel import-panel">
+                        <div class="panel-head">
+                            <div>
                                 <h2>教师任课表</h2>
                                 <p>支持“班级、学科、教师姓名”三列，也支持班级横向展开学科的宽表。</p>
                             </div>
@@ -143,7 +172,9 @@
                             <h2>成绩列映射预览</h2>
                             <p>确认系统识别到的学科列；多列成绩可手动指定最终采用列。</p>
                         </div>
+                        <button class="primary-button" id="confirm-analysis-btn">确认生成正式分析</button>
                     </div>
+                    <div id="preflight-panel" class="detail-card"></div>
                     <div class="table-wrap">
                         <table id="score-mapping-table">
                             <thead></thead>
@@ -168,8 +199,24 @@
                         </label>
                         <button class="ghost-button" id="reset-exam-scheme-btn">恢复默认口径</button>
                     </div>
+                    <div class="scheme-tools">
+                        <input id="scheme-name" type="text" placeholder="考试方案名称">
+                        <button class="ghost-button" id="save-scheme-btn">保存方案</button>
+                        <select id="scheme-template-select"></select>
+                        <button class="ghost-button" id="apply-scheme-btn">应用方案</button>
+                        <label class="setting-control">
+                            <input type="checkbox" id="lock-weight-config">
+                            <span>锁定评价权重</span>
+                        </label>
+                    </div>
                     <div class="table-wrap">
                         <table id="score-rule-table">
+                            <thead></thead>
+                            <tbody></tbody>
+                        </table>
+                    </div>
+                    <div class="table-wrap compact-table">
+                        <table id="weight-config-table">
                             <thead></thead>
                             <tbody></tbody>
                         </table>
@@ -415,12 +462,27 @@
                     </div>
                     <div id="comparison-panel" class="detail-card"></div>
                 </section>
+
+                <section class="panel">
+                    <div class="panel-head">
+                        <div>
+                            <h2>隐私与留档</h2>
+                            <p>清理本地数据库、导出匿名版，或生成可打印 HTML 报告。</p>
+                        </div>
+                        <div class="button-row">
+                            <button class="ghost-button" id="export-html-report-btn">导出 HTML 报告</button>
+                            <button class="ghost-button" id="export-anonymous-btn">导出匿名版</button>
+                            <button class="danger-button" id="clear-local-db-btn">清除本地保存</button>
+                        </div>
+                    </div>
+                    <div id="privacy-panel" class="detail-card"></div>
+                </section>
             </section>
         </main>
     </div>
 
     <div class="toast-region" id="toast-region" aria-live="polite"></div>
 
-    <script src="assets/js/app.js?v=20260503-full-optimization"></script>
+    <script src="assets/js/app.js?v=20260504-governance"></script>
 </body>
 </html>
