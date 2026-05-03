@@ -61,6 +61,12 @@
         ...SCORE_STATUS_RULES.map((rule) => [rule.key, rule.label]),
         ['present', '正常参考']
     ]);
+    const SCORE_BAND_RULES = [
+        { key: 'excellent', label: '优秀段', text: '优秀段(≥85%)', minRate: 0.85, maxRate: Infinity },
+        { key: 'good', label: '良好段', text: '良好段(75%-85%)', minRate: 0.75, maxRate: 0.85 },
+        { key: 'pass', label: '及格段', text: '及格段(60%-75%)', minRate: 0.6, maxRate: 0.75 },
+        { key: 'low', label: '低分段', text: '低分段(<60%)', minRate: -Infinity, maxRate: 0.6 }
+    ];
     const CORE_GRADE9 = ['语文', '数学', '英语', '物理', '化学'];
     const STANDARD_FULL_MARKS = [30, 40, 50, 60, 70, 80, 90, 100, 120, 150, 160, 180, 200];
     const LOCAL_KEY = 'LOCAL_SCHOOL_SCORE_ANALYTICS_V1';
@@ -2166,7 +2172,7 @@
         const rows = buildDistributionRows();
         els.distributionTable.querySelector('thead').innerHTML = `
             <tr>
-                <th>项目</th><th>满分</th><th>人数</th><th>均分</th><th>标准差</th><th>最低</th><th>Q1</th><th>中位数</th><th>Q3</th><th>最高</th><th>优秀段</th><th>良好段</th><th>及格段</th><th>低分段</th>
+                <th>项目</th><th>满分</th><th>人数</th><th>均分</th><th>标准差</th><th>最低</th><th>Q1</th><th>中位数</th><th>Q3</th><th>最高</th><th>优秀段(≥85%)</th><th>良好段(75%-85%)</th><th>及格段(60%-75%)</th><th>低分段(<60%)</th>
             </tr>
         `;
         els.distributionTable.querySelector('tbody').innerHTML = rows.length
@@ -2567,6 +2573,7 @@
                     ['重复导入', state.importStats.duplicateStudents ? `已合并 ${state.importStats.duplicateStudents} 条重复学生记录；${state.importStats.duplicateConflicts.length} 项分数冲突采用后导入值。` : '未发现重复学生记录。'],
                     ['教师总榜科目', getTeacherRankSubjects().join('、') || '未选择'],
                     ['评价权重', formatEvaluationWeights()],
+                    ['成绩分数段', getScoreBandRuleText()],
                     ['优秀线', state.grade === 9 ? '本年级前 15%' : '本年级前 20%'],
                     ['达标线', '本年级前 50%，另列卷面及格率=满分60%'],
                     ['两率一分权重', `${currentConfig().weights.avg}/${currentConfig().weights.exc}/${currentConfig().weights.pass}`],
@@ -2830,6 +2837,10 @@ ${htmlTable('教师解释', buildTeacherExplanationExportRows())}
         return keys.map((key) => `${EVALUATION_WEIGHT_LABELS[key] || key}${weights[key]}`).join('、');
     }
 
+    function getScoreBandRuleText() {
+        return '按对应项目满分比例划分：优秀≥85%，良好75%-85%，及格60%-75%，低分<60%。';
+    }
+
     function buildStudentReportRows(student) {
         if (!student) return [['项目', '内容'], ['提示', '未选择学生']];
         const header = ['学科', '分数', '校排', '班排', '距优秀线', '距达标线', '满分', '得分率', '判断'];
@@ -2873,7 +2884,7 @@ ${htmlTable('教师解释', buildTeacherExplanationExportRows())}
 
     function buildDistributionExportRows() {
         return [
-            ['项目', '满分', '人数', '均分', '标准差', '最低', 'Q1', '中位数', 'Q3', '最高', '优秀段', '良好段', '及格段', '低分段'],
+            ['项目', '满分', '人数', '均分', '标准差', '最低', 'Q1', '中位数', 'Q3', '最高', '优秀段(≥85%)', '良好段(75%-85%)', '及格段(60%-75%)', '低分段(<60%)'],
             ...buildDistributionRows().map((row) => [row.label, row.maxScore, row.count, round(row.avg, 2), round(row.sd, 2), round(row.min, 2), round(row.q1, 2), round(row.median, 2), round(row.q3, 2), round(row.max, 2), row.bandExcellent, row.bandGood, row.bandPass, row.bandLow])
         ];
     }
@@ -2976,6 +2987,7 @@ ${htmlTable('教师解释', buildTeacherExplanationExportRows())}
                 if (!count || !maxScore) return 0;
                 return values.filter((value) => value >= maxScore * minRate && value < maxScore * maxRate).length / count;
             };
+            const bandRates = Object.fromEntries(SCORE_BAND_RULES.map((rule) => [rule.key, band(rule.minRate, rule.maxRate)]));
             return {
                 label: item.label,
                 maxScore,
@@ -2987,10 +2999,10 @@ ${htmlTable('教师解释', buildTeacherExplanationExportRows())}
                 median: percentile(values, 0.5),
                 q3: percentile(values, 0.75),
                 max: count ? values[count - 1] : 0,
-                bandExcellent: band(0.85),
-                bandGood: band(0.75, 0.85),
-                bandPass: band(0.6, 0.75),
-                bandLow: maxScore && count ? values.filter((value) => value < maxScore * 0.6).length / count : 0
+                bandExcellent: bandRates.excellent,
+                bandGood: bandRates.good,
+                bandPass: bandRates.pass,
+                bandLow: bandRates.low
             };
         }).filter((row) => row.count);
     }
@@ -3001,16 +3013,10 @@ ${htmlTable('教师解释', buildTeacherExplanationExportRows())}
             .map((student) => student.total)
             .map(Number)
             .filter(Number.isFinite);
-        const bands = [
-            { label: '优秀段(≥85%)', min: 0.85, max: Infinity },
-            { label: '良好段(75%-85%)', min: 0.75, max: 0.85 },
-            { label: '及格段(60%-75%)', min: 0.6, max: 0.75 },
-            { label: '低分段(<60%)', min: -Infinity, max: 0.6 }
-        ];
-        if (!maxScore || !values.length) return bands.map((band) => ({ ...band, count: 0, rate: 0 }));
-        return bands.map((band) => {
-            const count = values.filter((value) => value >= maxScore * band.min && value < maxScore * band.max).length;
-            return { ...band, count, rate: count / values.length };
+        if (!maxScore || !values.length) return SCORE_BAND_RULES.map((rule) => ({ ...rule, label: rule.text, count: 0, rate: 0 }));
+        return SCORE_BAND_RULES.map((rule) => {
+            const count = values.filter((value) => value >= maxScore * rule.minRate && value < maxScore * rule.maxRate).length;
+            return { ...rule, label: rule.text, count, rate: count / values.length };
         });
     }
 
@@ -4191,6 +4197,7 @@ ${htmlTable('教师解释', buildTeacherExplanationExportRows())}
         getScoreAdjustmentSummary,
         getBlankScoreModeText,
         getConfiguredSourceMaxScore,
+        getScoreBandRuleText,
         normalizeClass,
         normalizeScoresForCurrentGrade,
         mergeDuplicateStudents,

@@ -4,7 +4,7 @@
     <meta charset="utf-8">
     <meta name="viewport" content="width=device-width, initial-scale=1">
     <title>校内成绩分析系统</title>
-    <link rel="stylesheet" href="assets/css/app.css?v=20260504-governance">
+    <link rel="stylesheet" href="assets/css/app.css?v=20260504-band-rules">
     <script src="assets/vendor/xlsx/xlsx.full.min.js"></script>
     <script src="assets/vendor/chart.js/chart.umd.min.js"></script>
 </head>
@@ -90,7 +90,7 @@
                         <div class="panel-head">
                             <div>
                                 <h2>分数段图</h2>
-                                <p>按当前总分满分比例统计优秀、良好、及格和低分段。</p>
+                                <p>按当前总分满分比例统计：优秀 ≥85%，良好 75%-85%，及格 60%-75%，低分 &lt;60%。</p>
                             </div>
                         </div>
                         <div class="chart-wrap chart-wrap-small">
@@ -285,7 +285,7 @@
                     <div class="panel-head">
                         <div>
                             <h2>成绩分布</h2>
-                            <p>用中位数、四分位、标准差和分数段判断稳定性与分化程度。</p>
+                            <p>用中位数、四分位、标准差和分数段判断稳定性；分数段按满分比例：优秀 ≥85%，良好 75%-85%，及格 60%-75%，低分 &lt;60%。</p>
                         </div>
                     </div>
                     <div class="table-wrap">
@@ -483,6 +483,6 @@
 
     <div class="toast-region" id="toast-region" aria-live="polite"></div>
 
-    <script src="assets/js/app.js?v=20260504-governance"></script>
+    <script src="assets/js/app.js?v=20260504-band-rules"></script>
 </body>
 </html>
