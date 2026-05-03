@@ -216,14 +216,10 @@
             id: findBestHeader(headers, ID_ALIASES),
             className: findBestHeader(headers, CLASS_ALIASES),
             school: findBestHeader(headers, SCHOOL_ALIASES),
-            subjects: {}
+            subjects: buildSubjectColumns(headers)
         };
 
-        headers.forEach((header, index) => {
-            const subject = normalizeSubjectHeader(header);
-            if (!subject) return;
-            if (!idx.subjects[subject]) idx.subjects[subject] = [];
-            idx.subjects[subject].push(index);
+        Object.keys(idx.subjects).forEach((subject) => {
             if (!state.subjects.includes(subject)) state.subjects.push(subject);
         });
 
@@ -234,7 +230,7 @@
             if (!name || name === '姓名') continue;
             const className = normalizeClass(row[idx.className]);
             const student = {
-                school: cleanText(idx.school >= 0 ? row[idx.school] : '') || cleanText(defaultSchool) || '本校',
+                school: cleanText(idx.school >= 0 ? row[idx.school] : '') || inferDefaultSchool(defaultSchool),
                 className: className || '未分班',
                 name,
                 id: cleanText(idx.id >= 0 ? row[idx.id] : ''),
@@ -250,7 +246,7 @@
                 let sum = 0;
                 let valid = false;
                 indexes.forEach((columnIndex) => {
-                    const score = parseScore(row[columnIndex]);
+                    const score = parseScore(row[columnIndex], true);
                     if (Number.isFinite(score)) {
                         sum += score;
                         valid = true;
@@ -340,7 +336,7 @@
                 const rule = adjustments[subject] || {};
                 const targetMax = Number(rule.targetMax || getSubjectMaxScore(subject));
                 const scale = Number(rule.scale || 1);
-                normalized[subject] = round(clamp(rawScore * scale, 0, targetMax), 1);
+                normalized[subject] = round(clamp(rawScore * scale, 0, targetMax), 2);
             });
             student.scores = normalized;
         });
@@ -840,7 +836,7 @@
                     <td>${escapeHtml(row.className)}</td>
                     <td>${row.studentCount}</td>
                     <td>${row.completeTotalCount}</td>
-                    <td>${formatScore(row.metrics.total.avg)}</td>
+                    <td>${formatScore(row.metrics.total.avg, 2)}</td>
                     <td>${percent(row.metrics.total.excRate)}</td>
                     <td>${percent(row.metrics.total.passRate)}</td>
                     <td>${formatNullablePercent(row.metrics.total.paperPassRate)}</td>
@@ -860,10 +856,10 @@
             ? state.subjectRows.map((row) => `
                 <tr>
                     <td><strong>${escapeHtml(row.subject)}</strong></td>
-                    <td>${row.avg.toFixed(1)}</td>
+                    <td>${formatScore(row.avg, 2)}</td>
                     ${classes.map((className) => {
                         const item = row.classMetrics.find((metric) => metric.className === className);
-                        return `<td>${item ? `${item.avg.toFixed(1)} / ${rankBadge(item.rank)}` : '-'}</td>`;
+                        return `<td>${item ? `${formatScore(item.avg, 2)} / ${rankBadge(item.rank)}` : '-'}</td>`;
                     }).join('')}
                 </tr>
             `).join('')
@@ -911,7 +907,7 @@
                     <td>${escapeHtml(row.subject)}</td>
                     <td>${escapeHtml(row.classes.join('、'))}</td>
                     <td>${row.studentCount}</td>
-                    <td>${row.avg.toFixed(1)}</td>
+                    <td>${formatScore(row.avg, 2)}</td>
                     <td>${percent(row.excRate)}</td>
                     <td>${percent(row.passRate)}</td>
                     <td>${formatNullablePercent(row.paperPassRate)}</td>
@@ -983,8 +979,8 @@
                         <td>${escapeHtml(student.className)}</td>
                         <td>${escapeHtml(student.name)}</td>
                         <td>${escapeHtml(student.id || '-')}</td>
-                        <td>${Number.isFinite(Number(score)) ? Number(score).toFixed(1) : '-'}</td>
-                        <td>${formatScore(student.total)}</td>
+                        <td>${formatScore(score, 2)}</td>
+                        <td>${formatScore(student.total, 2)}</td>
                     </tr>
                 `;
             }).join('')
@@ -1258,6 +1254,15 @@
         return [...new Set(state.students.map((student) => cleanText(student.school)).filter(Boolean))].sort(naturalCompare);
     }
 
+    function inferDefaultSchool(value) {
+        const text = cleanText(value);
+        if (!text) return '本校';
+        const key = cleanHeader(text).toLowerCase();
+        const nonSchoolNames = ['考号', '成绩', '成绩表', '学生成绩', '分数', '总表', '汇总', 'sheet1', 'sheet2', 'sheet3'];
+        if (nonSchoolNames.includes(key) || normalizeSubject(key)) return '本校';
+        return text;
+    }
+
     function ensureActiveSchool() {
         const schools = getSchoolNames();
         if (!schools.length) {
@@ -1334,6 +1339,54 @@
         return normalizeSubject(raw);
     }
 
+    function buildSubjectColumns(headers) {
+        const groups = {};
+        headers.forEach((header, index) => {
+            const candidate = getSubjectColumnCandidate(header, index);
+            if (!candidate) return;
+            if (!groups[candidate.subject]) groups[candidate.subject] = [];
+            groups[candidate.subject].push(candidate);
+        });
+
+        const result = {};
+        Object.entries(groups).forEach(([subject, candidates]) => {
+            const finalCandidates = candidates
+                .filter((item) => !item.isComponent)
+                .sort((a, b) => b.priority - a.priority || a.header.length - b.header.length || a.index - b.index);
+            if (finalCandidates.length) {
+                result[subject] = [finalCandidates[0].index];
+                return;
+            }
+            result[subject] = candidates
+                .filter((item) => item.isComponent)
+                .sort((a, b) => a.index - b.index)
+                .map((item) => item.index);
+        });
+        return result;
+    }
+
+    function getSubjectColumnCandidate(header, index) {
+        const raw = cleanText(header).replace(/\s+/g, '');
+        if (!raw) return null;
+        const subject = normalizeSubject(raw);
+        if (!subject) return null;
+        const hardExcludes = ['排名', '名次', '排位', '等级', '标准分', '相对分', '序号'];
+        if (hardExcludes.some((word) => raw.includes(word))) return null;
+
+        const exact = raw === subject;
+        const isConverted = raw.includes('折合') || raw.includes('折算');
+        const isTotal = raw.includes('总分') || raw.includes('总成绩') || raw.endsWith('总') || raw.includes('合计');
+        const isPlainScore = raw.includes('成绩') || raw.includes('分数') || raw.includes('得分');
+        const isComponent = /[一二三四五六七八九十0-9]+卷|客观|主观|选择|非选择|小题|卷[一二三四五六七八九十]/.test(raw);
+        let priority = 50;
+        if (isConverted) priority = 110;
+        else if (exact) priority = 100;
+        else if (isTotal) priority = 95;
+        else if (isPlainScore) priority = 85;
+        else if (isComponent) priority = 10;
+        return { subject, index, header: raw, priority, isComponent };
+    }
+
     function normalizeSubject(value) {
         const raw = cleanText(value).replace(/\s+/g, '');
         if (!raw) return '';
@@ -1387,10 +1440,10 @@
         return map[text] || 0;
     }
 
-    function parseScore(value) {
+    function parseScore(value, blankAsZero = false) {
         if (typeof value === 'number') return Number.isFinite(value) ? value : NaN;
         const text = cleanText(value).replace(/[\uff01-\uff5e]/g, (ch) => String.fromCharCode(ch.charCodeAt(0) - 0xfee0)).toUpperCase();
-        if (!text) return NaN;
+        if (!text) return blankAsZero ? 0 : NaN;
         if (ZERO_WORDS.some((word) => text.includes(word))) return 0;
         const match = text.match(/-?\d+(?:\.\d+)?/);
         return match ? Number(match[0]) : NaN;
@@ -1400,7 +1453,7 @@
         for (let i = 0; i < Math.min(rows.length, 8); i += 1) {
             const headers = (rows[i] || []).map((cell) => cleanHeader(cell));
             const hasName = findBestHeader(headers, NAME_ALIASES) !== -1;
-            const subjectCount = headers.filter((header) => normalizeSubjectHeader(header)).length;
+            const subjectCount = headers.filter((header, index) => getSubjectColumnCandidate(header, index)).length;
             if (hasName && subjectCount > 0) return i;
         }
         return 0;
@@ -1635,9 +1688,9 @@
             : percent(value);
     }
 
-    function formatScore(value) {
+    function formatScore(value, digits = 1) {
         const num = Number(value);
-        return Number.isFinite(num) ? num.toFixed(1) : '-';
+        return Number.isFinite(num) ? num.toFixed(digits) : '-';
     }
 
     function formatExportScore(value) {
@@ -1713,6 +1766,8 @@
         normalizeClass,
         normalizeScoresForCurrentGrade,
         parseTeacherRows,
+        parseScoreRows,
+        buildSubjectColumns,
         buildStudentRankRows,
         achievementScore,
         formatExportScore,

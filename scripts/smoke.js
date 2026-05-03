@@ -168,6 +168,36 @@ const { chromium } = require(playwrightPath);
     };
   });
 
+  const multiColumnParsing = await page.evaluate(() => {
+    const api = window.LocalSchoolAnalytics;
+    const state = api.state;
+    state.grade = 9;
+    state.activeSchool = '考号';
+    state.students = [];
+    state.subjects = [];
+    state.teachers = [];
+    api.parseScoreRows([
+      ['考号', '姓名', '班级', '语文一卷', '语文二卷', '语文总', '数学一卷', '数学二卷', '数学总', '数学折合', '英语一卷', '英语二卷', '英语总', '物理一卷', '物理二卷', '物理总', '化学一卷', '化学二卷', '化学总'],
+      [1, '甲', '9.6', 20, 70, 90, 24, 60, 84, 105, 50, 70, 120, 20, 80, 100, 30, 70, 100],
+      [2, '乙', '9.6', 22, 78.18, 100.18, 30, 66, 96, 120, 55, 75, 130, 25, 75, 100, 20, 60, 80],
+      [3, '丙', '9.5', '', '', '', 18, 62, 80, 100, 40, 60, 100, 20, 60, 80, 20, 50, 70]
+    ], '考号');
+    api.analyze();
+    const classRow = state.classRows.find((row) => row.className === '9.6');
+    const blankClassRow = state.classRows.find((row) => row.className === '9.5');
+    const class96Students = state.students.filter((student) => student.className === '9.6');
+    return {
+      subjects: api.getAnalysisSubjects(),
+      chineseAvg: Number(classRow.subjects.语文.avg.toFixed(2)),
+      mathScores: class96Students.map((student) => student.scores.数学),
+      physicsScores: class96Students.map((student) => student.scores.物理),
+      chemistryScores: class96Students.map((student) => student.scores.化学),
+      blankChineseAvg: blankClassRow.subjects.语文.avg,
+      blankChineseCount: blankClassRow.subjects.语文.count,
+      totals: class96Students.map((student) => student.total)
+    };
+  });
+
   await browser.close();
 
   if (errors.length) {
@@ -252,6 +282,15 @@ const { chromium } = require(playwrightPath);
     || moduleConsistency.classOne.absoluteScore <= 0) {
     throw new Error(`Module consistency checks failed: ${JSON.stringify(moduleConsistency)}`);
   }
+  if (multiColumnParsing.chineseAvg !== 95.09
+    || multiColumnParsing.mathScores.join('|') !== '105|120'
+    || multiColumnParsing.physicsScores.join('|') !== '90|90'
+    || multiColumnParsing.chemistryScores.join('|') !== '60|48'
+    || multiColumnParsing.blankChineseAvg !== 0
+    || multiColumnParsing.blankChineseCount !== 1
+    || multiColumnParsing.totals.some((value) => value > 600)) {
+    throw new Error(`Multi-column score parsing failed: ${JSON.stringify(multiColumnParsing)}`);
+  }
 
-  console.log(JSON.stringify({ ok: true, desktop, mobile, edgeCases, grade9Normalization, moduleConsistency }, null, 2));
+  console.log(JSON.stringify({ ok: true, desktop, mobile, edgeCases, grade9Normalization, moduleConsistency, multiColumnParsing }, null, 2));
 })();
