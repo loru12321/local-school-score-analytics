@@ -133,6 +133,41 @@ const { chromium } = require(playwrightPath);
     };
   });
 
+  const moduleConsistency = await page.evaluate(() => {
+    const api = window.LocalSchoolAnalytics;
+    const state = api.state;
+    state.grade = 9;
+    state.activeSchool = '模块校';
+    state.subjects = ['语文', '数学', '英语', '物理', '化学'];
+    state.students = [
+      { school: '模块校', className: '9.1', name: '完整一', id: 'M001', rawScores: { 语文: 140, 数学: 135, 英语: 130, 物理: 88, 化学: 58 }, scores: {}, total: 0, ranks: {} },
+      { school: '模块校', className: '9.1', name: '缺科生', id: 'M002', rawScores: { 语文: 120, 数学: 118, 英语: 110, 物理: 80 }, scores: {}, total: 0, ranks: {} },
+      { school: '模块校', className: '9.2', name: '完整二', id: 'M003', rawScores: { 语文: 110, 数学: 108, 英语: 100, 物理: 76, 化学: 45 }, scores: {}, total: 0, ranks: {} }
+    ];
+    state.teachers = [
+      { className: '9.1', subject: '语文', teacher: '语文甲' },
+      { className: '9.2', subject: '语文', teacher: '语文乙' },
+      { className: '9.3', subject: '语文', teacher: '错班教师' }
+    ];
+    api.analyze();
+    const rankRows = api.buildStudentRankRows();
+    const classOne = state.classRows.find((row) => row.className === '9.1');
+    const missing = state.students.find((student) => student.name === '缺科生');
+    return {
+      totals: state.students.map((student) => ({ name: student.name, total: Number.isFinite(student.total) ? student.total : null, rank: student.ranks?.total?.grade || null })),
+      classOne: {
+        studentCount: classOne.studentCount,
+        completeTotalCount: classOne.completeTotalCount,
+        totalAvg: classOne.metrics.total.avg,
+        absoluteScore: classOne.absoluteScore
+      },
+      missingExportTotal: rankRows.find((row) => row[1] === '缺科生').at(-3),
+      teacherCount: state.finalTeacherRows.length,
+      unmatchedCount: state.teacherCoverage.unmatched.length,
+      missingSubjects: missing.totalMissingSubjects
+    };
+  });
+
   await browser.close();
 
   if (errors.length) {
@@ -206,6 +241,17 @@ const { chromium } = require(playwrightPath);
   if (edgeCases.rankHeader.some((header) => String(header).startsWith('物理'))) {
     throw new Error(`Student rank export should only include active-school subjects: ${JSON.stringify(edgeCases.rankHeader)}`);
   }
+  if (moduleConsistency.totals.find((row) => row.name === '缺科生').total !== null
+    || moduleConsistency.totals.find((row) => row.name === '缺科生').rank !== null
+    || moduleConsistency.classOne.studentCount !== 2
+    || moduleConsistency.classOne.completeTotalCount !== 1
+    || moduleConsistency.missingExportTotal !== ''
+    || !moduleConsistency.missingSubjects.includes('化学')
+    || moduleConsistency.teacherCount !== 2
+    || moduleConsistency.unmatchedCount !== 1
+    || moduleConsistency.classOne.absoluteScore <= 0) {
+    throw new Error(`Module consistency checks failed: ${JSON.stringify(moduleConsistency)}`);
+  }
 
-  console.log(JSON.stringify({ ok: true, desktop, mobile, edgeCases, grade9Normalization }, null, 2));
+  console.log(JSON.stringify({ ok: true, desktop, mobile, edgeCases, grade9Normalization, moduleConsistency }, null, 2));
 })();
