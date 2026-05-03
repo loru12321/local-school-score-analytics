@@ -41,6 +41,8 @@ const realTeacherFile = 'C:/Users/loru/Desktop/初中部任课教师一览表202
         totalMax: api.getTotalMaxScore(),
         subjects: api.getAnalysisSubjects(),
         class96ChineseAvg: Number(class96?.subjects?.语文?.avg?.toFixed(2)),
+        class96DevelopmentScore: Number(class96?.developmentScore),
+        class96BottomThirdAvg: Number(class96?.bottomThirdAvg),
         teacherAssignments: state.teachers.length,
         teacherRows: state.teacherRows.length,
         gateBlocks: gate.blocks.length
@@ -114,6 +116,10 @@ const realTeacherFile = 'C:/Users/loru/Desktop/初中部任课教师一览表202
       teacherWeight: teacherWeighted?.teachingWeight,
       effectiveStudentWeight: teacherWeighted?.effectiveStudentWeight,
       historyAdjustmentFinite: Number.isFinite(Number(teacherWeighted?.historyAdjustment)),
+      developmentScoreFinite: state.classRows.every((row) => Number.isFinite(Number(row.developmentScore))),
+      bottomThirdAvgFinite: state.classRows.every((row) => Number.isFinite(Number(row.bottomThirdAvg))),
+      teacherConversionFinite: state.teacherRows.every((row) => Number.isFinite(Number(row.conversionScore))),
+      hasSupportAlert: state.studentAlerts.some((item) => item.type === '后1/3托底'),
       traceHasTeacher: traceRows.some((row) => row[0] === '教师学科'),
       traceHasRawSourceMax: traceRows.some((row) => row[0] === '学生学科' && row[2] === '化学' && row[5] === 100 && row[6] === 60),
       weightsLocked: state.weightConfigLocked,
@@ -128,6 +134,8 @@ const realTeacherFile = 'C:/Users/loru/Desktop/初中部任课教师一览表202
     if (realResult.students < 100
       || realResult.totalMax !== 600
       || realResult.class96ChineseAvg !== 95.09
+      || !Number.isFinite(realResult.class96DevelopmentScore)
+      || !Number.isFinite(realResult.class96BottomThirdAvg)
       || !realResult.subjects.includes('语文')
       || (fs.existsSync(realTeacherFile) && realResult.teacherAssignments < 20)
       || realResult.gateBlocks !== 0) {
@@ -144,6 +152,10 @@ const realTeacherFile = 'C:/Users/loru/Desktop/初中部任课教师一览表202
     || synthetic.teacherWeight !== 0.5
     || synthetic.effectiveStudentWeight !== 1
     || !synthetic.historyAdjustmentFinite
+    || !synthetic.developmentScoreFinite
+    || !synthetic.bottomThirdAvgFinite
+    || !synthetic.teacherConversionFinite
+    || !synthetic.hasSupportAlert
     || !synthetic.traceHasTeacher
     || !synthetic.traceHasRawSourceMax
     || !synthetic.weightsLocked

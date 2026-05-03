@@ -40,22 +40,26 @@
         { key: 'trueZero', label: '真实0分', regex: /^0(?:\.0+)?$/ }
     ];
     const DEFAULT_EVALUATION_WEIGHTS = {
-        classRelative: 46,
-        classAbsolute: 40,
+        classRelative: 36,
+        classAbsolute: 26,
         classBalance: 14,
-        classLowPenalty: 18,
-        teacherQuality: 88,
-        teacherRelative: 12,
-        teacherHistory: 0
+        classDevelopment: 24,
+        classLowPenalty: 12,
+        teacherQuality: 78,
+        teacherRelative: 10,
+        teacherHistory: 4,
+        teacherConversion: 8
     };
     const EVALUATION_WEIGHT_LABELS = {
         classRelative: '班级相对两率一分',
         classAbsolute: '班级绝对达成',
         classBalance: '班级学科均衡',
+        classDevelopment: '班级托底发展',
         classLowPenalty: '班级低分率扣分系数',
         teacherQuality: '教师质量分',
         teacherRelative: '教师学科内相对分',
-        teacherHistory: '教师历史进步校正'
+        teacherHistory: '教师历史进步校正',
+        teacherConversion: '教师临界转化'
     };
     const SCORE_REASON_LABELS = Object.fromEntries([
         ...SCORE_STATUS_RULES.map((rule) => [rule.key, rule.label]),
@@ -1123,7 +1127,8 @@
         };
         const weights = currentConfig().weights;
         const evalWeights = getEvaluationWeights();
-        const classWeightTotal = Math.max(evalWeights.classRelative + evalWeights.classAbsolute + evalWeights.classBalance, 1);
+        buildClassDevelopmentContext(rows);
+        const classWeightTotal = Math.max(evalWeights.classRelative + evalWeights.classAbsolute + evalWeights.classBalance + evalWeights.classDevelopment, 1);
         rows.forEach((row) => {
             row.rateScore = scoreFromMax(row.metrics.total, max, weights);
             row.absoluteScore = achievementScore(row.metrics.total, getTotalMaxScore());
@@ -1134,6 +1139,7 @@
                 row.rateScore * evalWeights.classRelative
                 + row.absoluteScore * evalWeights.classAbsolute
                 + row.balanceScore * evalWeights.classBalance
+                + row.developmentScore * evalWeights.classDevelopment
             ) / classWeightTotal - lowPenalty, 0, 100), 2);
             row.riskFlags = buildClassRiskFlags(row);
         });
@@ -1149,6 +1155,9 @@
         if (row.studentCount && row.completeTotalCount / row.studentCount < 0.85) flags.push('总分有效偏低');
         if (row.metrics.total.lowRate >= 0.25) flags.push('低分率高');
         if (row.balanceScore < 70) flags.push('学科不均衡');
+        if (Number(row.gradeBottomShare || 0) >= 0.45) flags.push('后1/3集中');
+        if (Number(row.developmentScore || 80) < 65) flags.push('托底偏弱');
+        if (Number(row.marginalRate || 0) >= 0.18) flags.push('临界生较多');
         return flags;
     }
 
@@ -1180,6 +1189,98 @@
         const avgRatio = average(ratios);
         const spread = standardDeviation(ratios);
         return clamp(avgRatio + 18 - spread * 0.9, 0, 100);
+    }
+
+    function buildClassDevelopmentContext(rows) {
+        const completeStudents = getAnalysisStudents().filter((student) => Number.isFinite(Number(student.total)));
+        const totalCount = completeStudents.length;
+        const bottomCount = totalCount ? Math.max(1, Math.ceil(totalCount / 3)) : 0;
+        const gradeBottomStudents = completeStudents.slice().sort((a, b) => Number(a.total) - Number(b.total)).slice(0, bottomCount);
+        const gradeBottomKeys = new Set(gradeBottomStudents.map((student) => studentKey(student)));
+        const expectedBottomShare = totalCount ? bottomCount / totalCount : 0;
+        const totalMax = getTotalMaxScore();
+        const passLine = Number(state.thresholds.total?.pass || 0);
+        const edgeWindow = Math.max(8, totalMax * 0.04);
+
+        completeStudents.slice().sort((a, b) => Number(b.total) - Number(a.total)).forEach((student, index) => {
+            const layerIndex = totalCount ? index / totalCount : 1;
+            student.localLayer = layerIndex < 1 / 3 ? 'A' : (layerIndex < 2 / 3 ? 'B' : 'C');
+        });
+
+        const stats = rows.map((row) => {
+            const valid = row.students.filter((student) => Number.isFinite(Number(student.total)));
+            const ownBottomCount = valid.length ? Math.max(1, Math.ceil(valid.length / 3)) : 0;
+            const ownBottom = valid.slice().sort((a, b) => Number(a.total) - Number(b.total)).slice(0, ownBottomCount);
+            const bottomThirdAvg = ownBottom.length ? average(ownBottom.map((student) => Number(student.total))) : 0;
+            const gradeBottomCount = valid.filter((student) => gradeBottomKeys.has(studentKey(student))).length;
+            const marginalRows = valid.filter((student) => passLine > 0 && Number(student.total) < passLine && Number(student.total) >= passLine - edgeWindow);
+            const history = buildClassHistoryAdjustment(valid);
+            return {
+                row,
+                validCount: valid.length,
+                bottomThirdAvg,
+                gradeBottomCount,
+                gradeBottomShare: valid.length ? gradeBottomCount / valid.length : 0,
+                marginalCount: marginalRows.length,
+                marginalRate: valid.length ? marginalRows.length / valid.length : 0,
+                history
+            };
+        });
+
+        const bottomAvgs = stats.filter((item) => item.validCount).map((item) => item.bottomThirdAvg);
+        const minBottomAvg = bottomAvgs.length ? Math.min(...bottomAvgs) : 0;
+        const maxBottomAvg = bottomAvgs.length ? Math.max(...bottomAvgs) : 0;
+        stats.forEach((item) => {
+            const rangeScore = maxBottomAvg > minBottomAvg
+                ? scoreFromRange(item.bottomThirdAvg, minBottomAvg, maxBottomAvg, 58, 100)
+                : 80;
+            const scoreRateScore = totalMax > 0 ? clamp((item.bottomThirdAvg / totalMax) * 118, 45, 96) : rangeScore;
+            const bottomAvgScore = clamp(rangeScore * 0.68 + scoreRateScore * 0.32, 0, 100);
+            const concentrationScore = item.validCount && expectedBottomShare
+                ? clamp(100 - Math.max(0, item.gradeBottomShare - expectedBottomShare) * 180 + Math.max(0, expectedBottomShare - item.gradeBottomShare) * 35, 45, 100)
+                : 80;
+            const historyScore = item.history.matchedCount >= 5 ? clamp(80 + Number(item.history.adjustment || 0) * 2.5, 0, 100) : 80;
+            item.row.bottomThirdAvg = round(item.bottomThirdAvg, 2);
+            item.row.gradeBottomCount = item.gradeBottomCount;
+            item.row.gradeBottomShare = round(item.gradeBottomShare, 4);
+            item.row.marginalCount = item.marginalCount;
+            item.row.marginalRate = round(item.marginalRate, 4);
+            item.row.classHistoryAdjustment = round(item.history.adjustment || 0, 2);
+            item.row.classHistoryAvgChange = round(item.history.avgChange || 0, 2);
+            item.row.classHistoryMatchedCount = item.history.matchedCount || 0;
+            item.row.developmentScore = round(clamp(bottomAvgScore * 0.55 + concentrationScore * 0.3 + historyScore * 0.15, 0, 100), 2);
+        });
+    }
+
+    function buildClassHistoryAdjustment(students) {
+        const baseline = getSelectedBaselineSnapshot();
+        const totalMax = getTotalMaxScore();
+        if (!baseline || !totalMax) return { adjustment: 0, avgChange: 0, matchedCount: 0 };
+        const baseMap = buildStudentBaselineMap(baseline);
+        const baselineTotalMax = Number(baseline.totalMax || totalMax);
+        const currentRows = getAnalysisStudents()
+            .map((student) => {
+                const base = findBaselineStudent(baseMap, student);
+                const nowTotal = Number(student.total);
+                const baseTotal = Number(base?.total);
+                if (!Number.isFinite(nowTotal) || !Number.isFinite(baseTotal) || !baselineTotalMax) return null;
+                return { student, change: (nowTotal / totalMax - baseTotal / baselineTotalMax) * 100 };
+            })
+            .filter(Boolean);
+        if (currentRows.length < 8) return { adjustment: 0, avgChange: 0, matchedCount: 0 };
+        const allAvgChange = average(currentRows.map((item) => item.change));
+        const allSpread = standardDeviation(currentRows.map((item) => item.change)) || 1;
+        const studentKeys = new Set(students.flatMap((student) => getStudentMatchKeys(student)));
+        const ownChanges = currentRows
+            .filter((item) => getStudentMatchKeys(item.student).some((key) => studentKeys.has(key)))
+            .map((item) => item.change);
+        if (ownChanges.length < 5) return { adjustment: 0, avgChange: 0, matchedCount: ownChanges.length };
+        const avgChange = average(ownChanges);
+        return {
+            adjustment: clamp(((avgChange - allAvgChange) / allSpread) * 5, -6, 6),
+            avgChange,
+            matchedCount: ownChanges.length
+        };
     }
 
     function buildTeacherRows() {
@@ -1251,6 +1352,7 @@
             const summary = metricSummary(scores, thresholds, getSubjectMaxScore(group.subject));
             const residual = buildSubjectResidual(group.subject, uniqueStudents);
             const historyAdjustment = buildTeacherHistoryAdjustment(group.subject, uniqueStudents);
+            const conversionMetrics = buildTeacherConversionMetrics(group.subject, uniqueStudents);
             const row = {
                 teacher: group.teacher,
                 teacherId: group.teacherId,
@@ -1269,6 +1371,10 @@
                 historyAdjustment: historyAdjustment.adjustment,
                 historyAvgChange: historyAdjustment.avgChange,
                 historyMatchedCount: historyAdjustment.matchedCount,
+                conversionScore: conversionMetrics.score,
+                conversionAdjustment: conversionMetrics.adjustment,
+                conversionSummary: conversionMetrics.summary,
+                conversionMatchedCount: conversionMetrics.matchedCount,
                 teachingWeight: teachingLoad.avgWeight,
                 effectiveStudentWeight: teachingLoad.effectiveStudentWeight,
                 workloadAdjustment: 0,
@@ -1286,7 +1392,7 @@
 
         const weights = currentConfig().weights;
         const evalWeights = getEvaluationWeights();
-        const teacherWeightTotal = Math.max(evalWeights.teacherQuality + evalWeights.teacherRelative + evalWeights.teacherHistory, 1);
+        const teacherWeightTotal = Math.max(evalWeights.teacherQuality + evalWeights.teacherRelative + evalWeights.teacherHistory + evalWeights.teacherConversion, 1);
         bySubject.forEach((rows) => {
             const max = {
                 avg: Math.max(0, ...rows.map((row) => row.avg)),
@@ -1303,7 +1409,7 @@
                 row.workloadAdjustment = clamp((Math.sqrt(Math.max(row.studentCount, 0)) - Math.sqrt(Math.max(medianCount, 1))) * 1.6, -2, 2);
                 const lowPenalty = clamp(row.lowRate * 12, 0, 8);
                 row.lowPenalty = lowPenalty;
-                row.fairScore = clamp(row.leagueScore * row.confidence + row.baselineAdjustment + row.historyAdjustment + row.workloadAdjustment - lowPenalty, 0, 100);
+                row.fairScore = clamp(row.leagueScore * row.confidence + row.baselineAdjustment + row.historyAdjustment + row.conversionAdjustment + row.workloadAdjustment - lowPenalty, 0, 100);
             });
             assignRanks(rows, (row) => row.fairScore, (row, rank) => {
                 row.subjectRank = rank;
@@ -1324,6 +1430,7 @@
                     row.fairScore * evalWeights.teacherQuality
                     + row.relativeScore * evalWeights.teacherRelative
                     + historyScore * evalWeights.teacherHistory
+                    + row.conversionScore * evalWeights.teacherConversion
                 ) / teacherWeightTotal;
                 row.riskFlags = buildTeacherRiskFlags(row);
             });
@@ -1474,6 +1581,103 @@
         };
     }
 
+    function buildTeacherConversionMetrics(subject, students) {
+        const maxScore = getSubjectMaxScore(subject);
+        const thresholds = state.thresholds[subject] || {};
+        const passLine = Number(thresholds.pass || 0);
+        const excLine = Number(thresholds.exc || 0);
+        const paperPassLine = maxScore ? maxScore * 0.6 : Number(thresholds.paperPass || 0);
+        const edgeWindow = Math.max(3, maxScore * 0.06);
+        const baseline = getSelectedBaselineSnapshot();
+        const ownKeys = new Set(students.flatMap((student) => getStudentMatchKeys(student)));
+
+        if (!baseline || !maxScore) {
+            const current = students
+                .map((student) => Number(student.scores?.[subject]))
+                .filter(Number.isFinite);
+            const passEdge = current.filter((score) => passLine > 0 && score < passLine && score >= passLine - edgeWindow).length;
+            const lowCount = current.filter((score) => paperPassLine > 0 && score < paperPassLine).length;
+            const lowRate = current.length ? lowCount / current.length : 0;
+            return {
+                score: 80,
+                adjustment: 0,
+                matchedCount: 0,
+                summary: current.length ? `待历史基准；当前达标临界 ${passEdge} 人，卷面低分 ${lowCount} 人(${percent(lowRate)})` : '待成绩样本'
+            };
+        }
+
+        const baseMap = buildStudentBaselineMap(baseline);
+        const matched = getAnalysisStudents()
+            .map((student) => {
+                const base = findBaselineStudent(baseMap, student);
+                const nowScore = Number(student.scores?.[subject]);
+                const baseScore = Number(base?.scores?.[subject]);
+                if (!Number.isFinite(nowScore) || !Number.isFinite(baseScore)) return null;
+                return { student, nowScore, baseScore };
+            })
+            .filter(Boolean);
+        const ownMatched = matched.filter((item) => getStudentMatchKeys(item.student).some((key) => ownKeys.has(key)));
+        if (matched.length < 8 || ownMatched.length < 5) {
+            return {
+                score: 80,
+                adjustment: 0,
+                matchedCount: ownMatched.length,
+                summary: ownMatched.length ? `历史匹配 ${ownMatched.length} 人，样本偏少暂不加减分` : '待历史匹配'
+            };
+        }
+
+        const countHit = (rows, predicate, hitPredicate) => {
+            const candidates = rows.filter(predicate);
+            return {
+                total: candidates.length,
+                hit: candidates.filter(hitPredicate).length,
+                rate: candidates.length ? candidates.filter(hitPredicate).length / candidates.length : null
+            };
+        };
+        const passEdge = countHit(
+            ownMatched,
+            (item) => passLine > 0 && item.baseScore < passLine && item.baseScore >= passLine - edgeWindow,
+            (item) => item.nowScore >= passLine
+        );
+        const excEdge = countHit(
+            ownMatched,
+            (item) => excLine > 0 && item.baseScore < excLine && item.baseScore >= excLine - edgeWindow,
+            (item) => item.nowScore >= excLine
+        );
+        const lowLift = countHit(
+            ownMatched,
+            (item) => paperPassLine > 0 && item.baseScore < paperPassLine,
+            (item) => item.nowScore >= paperPassLine
+        );
+        const fall = countHit(
+            ownMatched,
+            (item) => passLine > 0 && item.baseScore >= passLine,
+            (item) => item.nowScore < passLine
+        );
+
+        const componentScores = [];
+        if (passEdge.total) componentScores.push({ weight: passEdge.total, score: 65 + passEdge.rate * 35 });
+        if (lowLift.total) componentScores.push({ weight: lowLift.total, score: 65 + lowLift.rate * 35 });
+        if (excEdge.total) componentScores.push({ weight: excEdge.total * 0.7, score: 70 + excEdge.rate * 30 });
+        if (fall.total) componentScores.push({ weight: fall.total * 0.5, score: 88 - fall.rate * 28 });
+        const rawScore = componentScores.length
+            ? componentScores.reduce((sum, item) => sum + item.score * item.weight, 0) / componentScores.reduce((sum, item) => sum + item.weight, 0)
+            : 80;
+        const score = round(clamp(rawScore, 45, 100), 2);
+        const summary = [
+            `达标临界 ${passEdge.total ? `${passEdge.hit}/${passEdge.total}` : '0'}`,
+            `低分转出 ${lowLift.total ? `${lowLift.hit}/${lowLift.total}` : '0'}`,
+            `优秀临界 ${excEdge.total ? `${excEdge.hit}/${excEdge.total}` : '0'}`,
+            fall.total ? `达标回落 ${fall.hit}/${fall.total}` : ''
+        ].filter(Boolean).join('；');
+        return {
+            score,
+            adjustment: clamp((score - 80) / 5, -4, 4),
+            matchedCount: ownMatched.length,
+            summary
+        };
+    }
+
     function getSelectedBaselineSnapshot() {
         const history = state.examHistory || [];
         return history.find((item) => item.id === state.selectedHistoryId)
@@ -1505,6 +1709,7 @@
         if (row.lowRate >= 0.25) flags.push('低分率高');
         if (Math.abs(row.baselineAdjustment) >= 8) flags.push('基础波动大');
         if (Math.abs(row.historyAdjustment || 0) >= 6) flags.push('历史波动大');
+        if (Number(row.conversionMatchedCount || 0) >= 5 && Number(row.conversionScore || 80) < 65) flags.push('转化偏弱');
         if (Number(row.teachingWeight || 1) < 0.99) flags.push('任课权重');
         if (row.scopeText) flags.push('分组任课');
         return flags;
@@ -1513,30 +1718,84 @@
     function buildStudentAlerts() {
         const analysisStudents = getAnalysisStudents();
         const subjects = getAnalysisSubjects();
-        const totalCount = analysisStudents.length || 1;
+        const completeStudents = analysisStudents.filter((student) => Number.isFinite(Number(student.total)));
+        const totalCount = completeStudents.length || 1;
         const edgeRows = [];
         const biasRows = [];
+        const supportRows = [];
+        const potentialRows = [];
         analysisStudents.forEach((student) => {
             subjects.forEach((subject) => {
                 const score = Number(student.scores[subject]);
                 if (!Number.isFinite(score)) return;
                 const line = state.thresholds[subject] || {};
-                if (score < line.exc && score >= line.exc - 5) {
-                    edgeRows.push({ type: '优秀临界', student, subject, score, gap: round(line.exc - score, 1) });
-                } else if (score < line.pass && score >= line.pass - 5) {
-                    edgeRows.push({ type: '达标临界', student, subject, score, gap: round(line.pass - score, 1) });
+                const subjectWindow = Math.max(3, getSubjectMaxScore(subject) * 0.05);
+                if (score < line.exc && score >= line.exc - subjectWindow) {
+                    edgeRows.push({ type: '优秀临界', student, subject, score, gap: round(line.exc - score, 1), note: `距优秀线 ${round(line.exc - score, 1)} 分` });
+                } else if (score < line.pass && score >= line.pass - subjectWindow) {
+                    edgeRows.push({ type: '达标临界', student, subject, score, gap: round(line.pass - score, 1), note: `距达标线 ${round(line.pass - score, 1)} 分` });
                 }
                 const totalRank = student.ranks?.total?.grade || totalCount;
                 const subjectRank = student.ranks?.[subject]?.grade || totalCount;
                 if (totalRank <= totalCount * 0.4 && subjectRank >= totalCount * 0.6) {
-                    biasRows.push({ type: '偏科提醒', student, subject, score, gap: subjectRank });
+                    biasRows.push({ type: '偏科提醒', student, subject, score, gap: subjectRank, note: `总分靠前，单科年级第 ${subjectRank} 名` });
                 }
             });
+            const totalRank = student.ranks?.total?.grade;
+            if (Number.isFinite(Number(student.total)) && totalRank) {
+                const weak = getStudentWeakestSubject(student);
+                if (weak && totalRank > totalCount * 2 / 3) {
+                    supportRows.push({
+                        type: '后1/3托底',
+                        student,
+                        subject: weak.subject,
+                        score: weak.score,
+                        gap: totalRank,
+                        note: `总分年级第 ${totalRank} 名，${weak.subject}得分率 ${round(weak.rate * 100, 1)}%`
+                    });
+                }
+                if (totalRank > totalCount * 0.35 && totalRank <= totalCount * 0.75) {
+                    const nearPass = subjects
+                        .map((subject) => {
+                            const score = Number(student.scores?.[subject]);
+                            const pass = Number(state.thresholds[subject]?.pass || 0);
+                            const windowSize = Math.max(3, getSubjectMaxScore(subject) * 0.06);
+                            if (!Number.isFinite(score) || !pass || score >= pass || score < pass - windowSize) return null;
+                            return { subject, score, gap: round(pass - score, 1) };
+                        })
+                        .filter(Boolean)
+                        .sort((a, b) => a.gap - b.gap)[0];
+                    if (nearPass) {
+                        potentialRows.push({
+                            type: '潜力提升',
+                            student,
+                            subject: nearPass.subject,
+                            score: nearPass.score,
+                            gap: nearPass.gap,
+                            note: `总分校内${student.localLayer || 'B'}层，${nearPass.subject}距达标线 ${nearPass.gap} 分`
+                        });
+                    }
+                }
+            }
         });
         state.studentAlerts = [
-            ...edgeRows.sort((a, b) => a.gap - b.gap).slice(0, 12),
-            ...biasRows.sort((a, b) => b.gap - a.gap).slice(0, 12)
+            ...edgeRows.sort((a, b) => a.gap - b.gap).slice(0, 10),
+            ...supportRows.sort((a, b) => b.gap - a.gap).slice(0, 8),
+            ...potentialRows.sort((a, b) => a.gap - b.gap).slice(0, 8),
+            ...biasRows.sort((a, b) => b.gap - a.gap).slice(0, 8)
         ];
+    }
+
+    function getStudentWeakestSubject(student) {
+        return getAnalysisSubjects()
+            .map((subject) => {
+                const score = Number(student.scores?.[subject]);
+                const maxScore = getSubjectMaxScore(subject);
+                if (!Number.isFinite(score) || !maxScore) return null;
+                return { subject, score, rate: score / maxScore };
+            })
+            .filter(Boolean)
+            .sort((a, b) => a.rate - b.rate)[0] || null;
     }
 
     function buildImportDiagnostics() {
@@ -1886,14 +2145,14 @@
                 ? { title: '成绩折算', body: adjustmentSummary }
                 : { title: '成绩折算', body: '按原始满分确认表折算；未配置原始满分的科目保持自动推断并封顶。' },
             weakClass
-                ? { title: '班级关注', body: `${weakClass.className} 综合分 ${weakClass.qualityScore.toFixed(1)}，可优先看学科矩阵。` }
+                ? { title: '班级关注', body: `${weakClass.className} 综合分 ${weakClass.qualityScore.toFixed(1)}，托底发展 ${Number(weakClass.developmentScore || 0).toFixed(1)}。` }
                 : { title: '班级关注', body: '导入成绩后自动生成班级站位。' },
             topSubject
                 ? { title: '学科状态', body: `${topSubject.subject} 得分率 ${(topSubject.scoreRate * 100).toFixed(1)}%，样本 ${topSubject.count} 人。` }
                 : { title: '学科状态', body: '导入成绩后自动生成各科均分与两率。' },
             state.studentAlerts.length
-                ? { title: '学生名单', body: `已筛出 ${state.studentAlerts.length} 条临界或偏科提醒。` }
-                : { title: '学生名单', body: '当前暂无临界或偏科提醒。' },
+                ? { title: '学生名单', body: `已筛出 ${state.studentAlerts.length} 条临界、托底或偏科提醒。` }
+                : { title: '学生名单', body: '当前暂无临界、托底或偏科提醒。' },
             state.finalTeacherRows.length
                 ? { title: '教师总榜', body: `第 1 名：${state.finalTeacherRows[0].teacher}，最终分 ${state.finalTeacherRows[0].overallScore.toFixed(1)}。` }
                 : { title: '教师总榜', body: '导入任课表后生成同学科校正排名。' },
@@ -2063,10 +2322,12 @@
             classRelative: '班级间相对比较，仍使用当前年级两率一分权重。',
             classAbsolute: '按满分得分率、卷面及格率等绝对达成评价。',
             classBalance: '学科得分率越均衡，该项越高。',
+            classDevelopment: '看校内后 1/3 学生、班级后 1/3 均分和历史进步，更适合单校托底诊断。',
             classLowPenalty: '低分率扣分系数，最终扣分封顶 10 分。',
             teacherQuality: '教师学科项以质量分为主。',
             teacherRelative: '教师同学科内相对百分位，防止只看原始差距。',
-            teacherHistory: '有历史基准时按学生进步幅度做轻量校正。'
+            teacherHistory: '有历史基准时按学生进步幅度做轻量校正。',
+            teacherConversion: '有历史基准时看临界生达标、低分转出；无基准时只作中性提醒。'
         };
         els.weightConfigTable.querySelector('tbody').innerHTML = Object.keys(DEFAULT_EVALUATION_WEIGHTS).map((key) => `
             <tr>
@@ -2081,7 +2342,7 @@
         const table = els.classTable;
         table.querySelector('thead').innerHTML = `
             <tr>
-                <th>排名</th><th>班级</th><th>人数</th><th>总分有效</th><th>总分均分</th><th>优秀率</th><th>达标率(前50%)</th><th>卷面及格率</th><th>低分率</th><th>学科均衡</th><th>综合分</th><th>风险提示</th>
+                <th>排名</th><th>班级</th><th>人数</th><th>总分有效</th><th>总分均分</th><th>优秀率</th><th>达标率(前50%)</th><th>卷面及格率</th><th>低分率</th><th>后1/3均分</th><th>校内后1/3占比</th><th>临界人数</th><th>学科均衡</th><th>托底发展</th><th>综合分</th><th>风险提示</th>
             </tr>
         `;
         table.querySelector('tbody').innerHTML = state.classRows.length
@@ -2096,12 +2357,16 @@
                     <td>${percent(row.metrics.total.passRate)}</td>
                     <td>${formatNullablePercent(row.metrics.total.paperPassRate)}</td>
                     <td>${percent(row.metrics.total.lowRate)}</td>
+                    <td>${formatScore(row.bottomThirdAvg, 2)}</td>
+                    <td>${percent(row.gradeBottomShare || 0)}</td>
+                    <td>${row.marginalCount || 0}</td>
                     <td>${row.balanceScore.toFixed(1)}</td>
+                    <td>${Number(row.developmentScore || 0).toFixed(1)}</td>
                     <td><strong>${row.qualityScore.toFixed(1)}</strong></td>
                     <td>${riskText(row.riskFlags)}</td>
                 </tr>
             `).join('')
-            : emptyRow(12);
+            : emptyRow(16);
     }
 
     function renderClassDrilldown() {
@@ -2132,6 +2397,10 @@
                 ${detailItem('班级', row.className)}
                 ${detailItem('总分均分', formatScore(row.metrics.total.avg, 2))}
                 ${detailItem('有效/人数', `${row.completeTotalCount}/${row.studentCount}`)}
+                ${detailItem('后1/3均分', formatScore(row.bottomThirdAvg, 2))}
+                ${detailItem('托底发展分', Number(row.developmentScore || 0).toFixed(1))}
+                ${detailItem('校内后1/3占比', percent(row.gradeBottomShare || 0))}
+                ${detailItem('临界人数', `${row.marginalCount || 0} 人`)}
                 ${detailItem('风险', row.riskFlags?.length ? row.riskFlags.join('、') : '正常')}
             </div>
             <table class="mini-table">
@@ -2233,7 +2502,7 @@
         const table = els.teacherDetailTable;
         table.querySelector('thead').innerHTML = `
             <tr>
-                <th>学科排名</th><th>教师</th><th>学科</th><th>总榜</th><th>班级/范围</th><th>人数</th><th>任课权重</th><th>均分</th><th>优秀率</th><th>达标率(前50%)</th><th>卷面及格率</th><th>基础校正</th><th>历史校正</th><th>置信系数</th><th>质量分</th><th>风险提示</th>
+                <th>学科排名</th><th>教师</th><th>学科</th><th>总榜</th><th>班级/范围</th><th>人数</th><th>任课权重</th><th>均分</th><th>优秀率</th><th>达标率(前50%)</th><th>卷面及格率</th><th>基础校正</th><th>历史校正</th><th>转化分</th><th>置信系数</th><th>质量分</th><th>风险提示</th>
             </tr>
         `;
         table.querySelector('tbody').innerHTML = state.teacherRows.length
@@ -2252,12 +2521,13 @@
                     <td>${formatNullablePercent(row.paperPassRate)}</td>
                     <td>${signed(row.baselineAdjustment)}</td>
                     <td>${signed(row.historyAdjustment || 0)}</td>
+                    <td title="${escapeAttr(row.conversionSummary || '')}">${Number(row.conversionScore || 80).toFixed(1)}</td>
                     <td>${row.confidence.toFixed(2)}</td>
                     <td><strong>${row.fairScore.toFixed(1)}</strong></td>
                     <td>${riskText(row.riskFlags)}</td>
                 </tr>
             `).join('')
-            : emptyRow(16);
+            : emptyRow(17);
     }
 
     function renderTeacherExplanation() {
@@ -2282,7 +2552,7 @@
                 ${detailItem('风险', teacher.riskFlags?.length ? teacher.riskFlags.join('、') : '正常')}
             </div>
             <table class="mini-table">
-                <thead><tr><th>学科</th><th>班级/范围</th><th>人数</th><th>均分</th><th>质量分</th><th>科内相对分</th><th>学科项分</th><th>权重</th><th>校正/风险</th></tr></thead>
+                <thead><tr><th>学科</th><th>班级/范围</th><th>人数</th><th>均分</th><th>质量分</th><th>科内相对分</th><th>转化分</th><th>学科项分</th><th>权重</th><th>校正/风险</th></tr></thead>
                 <tbody>${teacher.subjects.map((item) => {
                     const weight = Math.max(item.effectiveStudentWeight || item.studentCount, 1) * item.confidence;
                     return `
@@ -2293,9 +2563,10 @@
                             <td>${formatScore(item.avg, 2)}</td>
                             <td>${item.fairScore.toFixed(2)}</td>
                             <td>${item.relativeScore.toFixed(2)}</td>
+                            <td title="${escapeAttr(item.conversionSummary || '')}">${Number(item.conversionScore || 80).toFixed(2)}</td>
                             <td>${item.finalUnitScore.toFixed(2)}</td>
                             <td>${weight.toFixed(2)}</td>
-                            <td>基础${signed(item.baselineAdjustment)} / 历史${signed(item.historyAdjustment || 0)}；${riskText(item.riskFlags)}</td>
+                            <td>基础${signed(item.baselineAdjustment)} / 历史${signed(item.historyAdjustment || 0)} / 转化${signed(item.conversionAdjustment || 0)}；${riskText(item.riskFlags)}</td>
                         </tr>
                     `;
                 }).join('')}</tbody>
@@ -2405,9 +2676,9 @@
         els.studentAlertGrid.innerHTML = state.studentAlerts.length
             ? state.studentAlerts.slice(0, 12).map((item) => insightCard(
                 `${item.type} · ${item.subject}`,
-                `${item.student.className} ${item.student.name}：${item.score.toFixed(1)} 分，${item.type === '偏科提醒' ? `单科年级第 ${item.gap} 名` : `差 ${item.gap} 分`}`
+                `${item.student.className} ${item.student.name}：${item.score.toFixed(1)} 分，${item.note || (item.type === '偏科提醒' ? `单科年级第 ${item.gap} 名` : `差 ${item.gap} 分`)}`
             )).join('')
-            : insightCard('暂无名单', '导入成绩后自动筛选临界生和偏科学生。');
+            : insightCard('暂无名单', '导入成绩后自动筛选临界生、后1/3托底学生和偏科学生。');
     }
 
     function renderExamComparison() {
@@ -2479,8 +2750,8 @@
             {
                 name: '班级总览',
                 rows: [
-                    ['排名', '班级', '人数', '总分有效人数', '总分均分', '优秀率', '达标率(前50%)', '卷面及格率', '低分率', '相对两率一分', '绝对达成分', '学科均衡', '综合分', '风险提示'],
-                    ...state.classRows.map((row) => [row.rank, row.className, row.studentCount, row.completeTotalCount, round(row.metrics.total.avg, 2), row.metrics.total.excRate, row.metrics.total.passRate, row.metrics.total.paperPassRate, row.metrics.total.lowRate, round(row.rateScore, 2), round(row.absoluteScore, 2), round(row.balanceScore, 2), row.qualityScore, (row.riskFlags || []).join('、')])
+                    ['排名', '班级', '人数', '总分有效人数', '总分均分', '优秀率', '达标率(前50%)', '卷面及格率', '低分率', '后1/3均分', '校内后1/3占比', '临界人数', '相对两率一分', '绝对达成分', '学科均衡', '托底发展', '综合分', '风险提示'],
+                    ...state.classRows.map((row) => [row.rank, row.className, row.studentCount, row.completeTotalCount, round(row.metrics.total.avg, 2), row.metrics.total.excRate, row.metrics.total.passRate, row.metrics.total.paperPassRate, row.metrics.total.lowRate, round(row.bottomThirdAvg, 2), row.gradeBottomShare, row.marginalCount || 0, round(row.rateScore, 2), round(row.absoluteScore, 2), round(row.balanceScore, 2), round(row.developmentScore, 2), row.qualityScore, (row.riskFlags || []).join('、')])
                 ]
             },
             {
@@ -2511,8 +2782,8 @@
             {
                 name: '教师学科明细',
                 rows: [
-                    ['学科排名', '教师', '教师编号', '学科', '是否进总榜', '班级', '任课范围', '人数', '有效学生权重', '任课权重', '均分', '优秀率', '达标率(前50%)', '卷面及格率', '低分率', '相对两率一分', '绝对达成分', '两率一分综合', '基础校正', '历史校正', '工作量修正', '置信系数', '质量分', '科内相对分', '学科项分', '风险提示'],
-                    ...state.teacherRows.map((row) => [row.subjectRank, row.teacher, row.teacherId || '', row.subject, row.inFinalRank ? '是' : '否', row.classes.join('、'), row.scopeText || '', row.studentCount, round(row.effectiveStudentWeight || row.studentCount, 2), round(row.teachingWeight || 1, 3), round(row.avg, 2), row.excRate, row.passRate, row.paperPassRate, row.lowRate, round(row.relativeLeagueScore, 2), round(row.absoluteScore, 2), round(row.leagueScore, 2), round(row.baselineAdjustment, 2), round(row.historyAdjustment || 0, 2), round(row.workloadAdjustment, 2), round(row.confidence, 3), round(row.fairScore, 2), round(row.relativeScore, 2), round(row.finalUnitScore, 2), (row.riskFlags || []).join('、')])
+                    ['学科排名', '教师', '教师编号', '学科', '是否进总榜', '班级', '任课范围', '人数', '有效学生权重', '任课权重', '均分', '优秀率', '达标率(前50%)', '卷面及格率', '低分率', '相对两率一分', '绝对达成分', '两率一分综合', '基础校正', '历史校正', '转化分', '转化说明', '工作量修正', '置信系数', '质量分', '科内相对分', '学科项分', '风险提示'],
+                    ...state.teacherRows.map((row) => [row.subjectRank, row.teacher, row.teacherId || '', row.subject, row.inFinalRank ? '是' : '否', row.classes.join('、'), row.scopeText || '', row.studentCount, round(row.effectiveStudentWeight || row.studentCount, 2), round(row.teachingWeight || 1, 3), round(row.avg, 2), row.excRate, row.passRate, row.paperPassRate, row.lowRate, round(row.relativeLeagueScore, 2), round(row.absoluteScore, 2), round(row.leagueScore, 2), round(row.baselineAdjustment, 2), round(row.historyAdjustment || 0, 2), round(row.conversionScore || 80, 2), row.conversionSummary || '', round(row.workloadAdjustment, 2), round(row.confidence, 3), round(row.fairScore, 2), round(row.relativeScore, 2), round(row.finalUnitScore, 2), (row.riskFlags || []).join('、')])
                 ]
             },
             {
@@ -2577,8 +2848,9 @@
                     ['优秀线', state.grade === 9 ? '本年级前 15%' : '本年级前 20%'],
                     ['达标线', '本年级前 50%，另列卷面及格率=满分60%'],
                     ['两率一分权重', `${currentConfig().weights.avg}/${currentConfig().weights.exc}/${currentConfig().weights.pass}`],
-                    ['班级综合分', '相对两率一分 + 绝对达成分 + 学科均衡，并对低分率做小幅扣分；总分缺科学生不参与总分均分和总分排名。'],
-                    ['教师最终排名', '同学科内比较为主，同时加入满分得分率的绝对达成分；基础校正、历史进步、样本置信、任课权重、工作量和低分率修正后，再按配置权重汇总。']
+                    ['单校发展评价', '借鉴乡镇级部“托底、临界、进步”思路，但不做多校横向排名；只在本校年级内按前中后 1/3、后 1/3 均分、临界生和历史进步做诊断。'],
+                    ['班级综合分', '相对两率一分 + 绝对达成分 + 学科均衡 + 托底发展，并对低分率做小幅扣分；总分缺科学生不参与总分均分和总分排名。'],
+                    ['教师最终排名', '同学科内比较为主，同时加入满分得分率的绝对达成分；基础校正、历史进步、临界/低分转化、样本置信、任课权重、工作量和低分率修正后，再按配置权重汇总。']
                 ]
             }
         ];
@@ -2806,7 +3078,7 @@ ${htmlTable('教师解释', buildTeacherExplanationExportRows())}
                 '',
                 100,
                 '',
-                `相对${round(row.rateScore, 2)}、绝对${round(row.absoluteScore, 2)}、均衡${round(row.balanceScore, 2)}、低分扣${round(row.lowPenalty || 0, 2)}；权重${formatEvaluationWeights('class')}`,
+                `相对${round(row.rateScore, 2)}、绝对${round(row.absoluteScore, 2)}、均衡${round(row.balanceScore, 2)}、托底${round(row.developmentScore || 0, 2)}、后1/3均分${round(row.bottomThirdAvg || 0, 2)}、校内后1/3占比${percent(row.gradeBottomShare || 0)}、历史${signed(row.classHistoryAdjustment || 0)}、低分扣${round(row.lowPenalty || 0, 2)}；权重${formatEvaluationWeights('class')}`,
                 row.rank,
                 ''
             ]);
@@ -2821,7 +3093,7 @@ ${htmlTable('教师解释', buildTeacherExplanationExportRows())}
                 '',
                 100,
                 '',
-                `质量${round(row.fairScore, 2)}、相对${round(row.relativeScore, 2)}、历史${round(row.historyAdjustment || 0, 2)}、任课权重${round(row.teachingWeight || 1, 2)}；权重${formatEvaluationWeights('teacher')}`,
+                `质量${round(row.fairScore, 2)}、相对${round(row.relativeScore, 2)}、历史${round(row.historyAdjustment || 0, 2)}、转化${round(row.conversionScore || 80, 2)}、任课权重${round(row.teachingWeight || 1, 2)}；权重${formatEvaluationWeights('teacher')}`,
                 row.subjectRank,
                 ''
             ]);
@@ -2832,8 +3104,8 @@ ${htmlTable('教师解释', buildTeacherExplanationExportRows())}
     function formatEvaluationWeights(scope = '') {
         const weights = getEvaluationWeights();
         const keys = scope === 'class'
-            ? ['classRelative', 'classAbsolute', 'classBalance', 'classLowPenalty']
-            : (scope === 'teacher' ? ['teacherQuality', 'teacherRelative', 'teacherHistory'] : Object.keys(DEFAULT_EVALUATION_WEIGHTS));
+            ? ['classRelative', 'classAbsolute', 'classBalance', 'classDevelopment', 'classLowPenalty']
+            : (scope === 'teacher' ? ['teacherQuality', 'teacherRelative', 'teacherHistory', 'teacherConversion'] : Object.keys(DEFAULT_EVALUATION_WEIGHTS));
         return keys.map((key) => `${EVALUATION_WEIGHT_LABELS[key] || key}${weights[key]}`).join('、');
     }
 
@@ -2911,7 +3183,7 @@ ${htmlTable('教师解释', buildTeacherExplanationExportRows())}
 
     function buildClassDiagnosisRows() {
         return [
-            ['班级', '综合排名', '人数', '总分有效', '总分均分', '综合分', '薄弱学科', '风险提示'],
+            ['班级', '综合排名', '人数', '总分有效', '总分均分', '后1/3均分', '校内后1/3占比', '临界人数', '托底发展分', '综合分', '薄弱学科', '风险提示'],
             ...state.classRows.map((row) => {
                 const weakSubjects = Object.entries(row.subjects)
                     .map(([subject, metric]) => ({ subject, rate: getSubjectMaxScore(subject) ? metric.avg / getSubjectMaxScore(subject) : 0 }))
@@ -2919,16 +3191,16 @@ ${htmlTable('教师解释', buildTeacherExplanationExportRows())}
                     .slice(0, 3)
                     .map((item) => item.subject)
                     .join('、');
-                return [row.className, row.rank, row.studentCount, row.completeTotalCount, round(row.metrics.total.avg, 2), row.qualityScore, weakSubjects, (row.riskFlags || []).join('、')];
+                return [row.className, row.rank, row.studentCount, row.completeTotalCount, round(row.metrics.total.avg, 2), round(row.bottomThirdAvg, 2), row.gradeBottomShare || 0, row.marginalCount || 0, round(row.developmentScore || 0, 2), row.qualityScore, weakSubjects, (row.riskFlags || []).join('、')];
             })
         ];
     }
 
     function buildTeacherExplanationExportRows() {
-        const rows = [['教师', '教师编号', '最终排名', '最终分', '学科', '班级', '任课范围', '人数', '有效学生权重', '均分', '质量分', '科内相对分', '历史校正', '学科项分', '汇总权重', '基础校正', '风险提示']];
+        const rows = [['教师', '教师编号', '最终排名', '最终分', '学科', '班级', '任课范围', '人数', '有效学生权重', '均分', '质量分', '科内相对分', '历史校正', '转化分', '转化说明', '学科项分', '汇总权重', '基础校正', '风险提示']];
         state.finalTeacherRows.forEach((teacher) => {
             teacher.subjects.forEach((item) => {
-                rows.push([teacher.teacher, teacher.teacherId || '', teacher.rank, round(teacher.overallScore, 2), item.subject, item.classes.join('、'), item.scopeText || '', item.studentCount, round(item.effectiveStudentWeight || item.studentCount, 2), round(item.avg, 2), round(item.fairScore, 2), round(item.relativeScore, 2), round(item.historyAdjustment || 0, 2), round(item.finalUnitScore, 2), round(Math.max(item.effectiveStudentWeight || item.studentCount, 1) * item.confidence, 2), round(item.baselineAdjustment, 2), (item.riskFlags || []).join('、')]);
+                rows.push([teacher.teacher, teacher.teacherId || '', teacher.rank, round(teacher.overallScore, 2), item.subject, item.classes.join('、'), item.scopeText || '', item.studentCount, round(item.effectiveStudentWeight || item.studentCount, 2), round(item.avg, 2), round(item.fairScore, 2), round(item.relativeScore, 2), round(item.historyAdjustment || 0, 2), round(item.conversionScore || 80, 2), item.conversionSummary || '', round(item.finalUnitScore, 2), round(Math.max(item.effectiveStudentWeight || item.studentCount, 1) * item.confidence, 2), round(item.baselineAdjustment, 2), (item.riskFlags || []).join('、')]);
             });
         });
         return rows;
@@ -2936,8 +3208,8 @@ ${htmlTable('教师解释', buildTeacherExplanationExportRows())}
 
     function buildStudentAlertExportRows() {
         return [
-            ['类型', '班级', '姓名', '学科', '分数', '差距/名次'],
-            ...state.studentAlerts.map((item) => [item.type, item.student.className, item.student.name, item.subject, round(item.score, 2), item.gap])
+            ['类型', '班级', '姓名', '学科', '分数', '差距/名次', '说明'],
+            ...state.studentAlerts.map((item) => [item.type, item.student.className, item.student.name, item.subject, round(item.score, 2), item.gap, item.note || ''])
         ];
     }
 
@@ -2951,6 +3223,9 @@ ${htmlTable('教师解释', buildTeacherExplanationExportRows())}
             if (!base) return;
             rows.push(['班级总分均分', row.className, round(row.metrics.total.avg, 2), round(base.totalAvg, 2), signed(row.metrics.total.avg - base.totalAvg), '正数表示本次高于基准']);
             rows.push(['班级综合分', row.className, round(row.qualityScore, 2), round(base.qualityScore, 2), signed(row.qualityScore - base.qualityScore), '正数表示综合表现提升']);
+            if (Number.isFinite(Number(base.developmentScore))) {
+                rows.push(['班级托底发展', row.className, round(row.developmentScore, 2), round(base.developmentScore, 2), signed(row.developmentScore - base.developmentScore), '正数表示后1/3与临界托底状态改善']);
+            }
         });
         const baseStudentMap = buildStudentBaselineMap(baseline);
         getAnalysisStudents().forEach((student) => {
@@ -3115,7 +3390,7 @@ ${htmlTable('教师解释', buildTeacherExplanationExportRows())}
         ws['!autofilter'] = { ref: XLSX.utils.encode_range({ s: { r: 0, c: 0 }, e: { r: Math.max(rows.length - 1, 0), c: Math.max(header.length - 1, 0) } }) };
         header.forEach((title, columnIndex) => {
             const text = cleanText(title);
-            if (!/(率|系数)$|率\(|优秀率|达标率|低分率|及格率|优秀段|良好段|及格段|低分段/.test(text)) return;
+            if (!/(率|系数|占比)$|率\(|优秀率|达标率|低分率|及格率|优秀段|良好段|及格段|低分段/.test(text)) return;
             for (let rowIndex = 1; rowIndex < rows.length; rowIndex += 1) {
                 const cell = ws[XLSX.utils.encode_cell({ r: rowIndex, c: columnIndex })];
                 if (cell && typeof cell.v === 'number' && cell.v >= 0 && cell.v <= 1) cell.z = '0.0%';
@@ -3301,6 +3576,9 @@ ${htmlTable('教师解释', buildTeacherExplanationExportRows())}
                 className: row.className,
                 totalAvg: row.metrics.total.avg,
                 qualityScore: row.qualityScore,
+                developmentScore: row.developmentScore,
+                bottomThirdAvg: row.bottomThirdAvg,
+                gradeBottomShare: row.gradeBottomShare,
                 studentCount: row.studentCount,
                 completeTotalCount: row.completeTotalCount
             })),
@@ -3894,6 +4172,16 @@ ${htmlTable('教师解释', buildTeacherExplanationExportRows())}
         const passScore = Number(metric.passRate || 0) * 100;
         const excScore = Number(metric.excRate || 0) * 100;
         return clamp(avgScore * 0.55 + paperPassScore * 0.25 + passScore * 0.12 + excScore * 0.08, 0, 100);
+    }
+
+    function scoreFromRange(value, minValue, maxValue, minScore = 60, maxScore = 100) {
+        const valueNumber = Number(value);
+        const minNumber = Number(minValue);
+        const maxNumber = Number(maxValue);
+        if (!Number.isFinite(valueNumber) || !Number.isFinite(minNumber) || !Number.isFinite(maxNumber) || maxNumber <= minNumber) {
+            return (minScore + maxScore) / 2;
+        }
+        return clamp(minScore + ((valueNumber - minNumber) / (maxNumber - minNumber)) * (maxScore - minScore), minScore, maxScore);
     }
 
     function getBaseScoreExcluding(student, subject) {
