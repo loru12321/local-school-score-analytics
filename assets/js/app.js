@@ -24,10 +24,17 @@
     const SCHOOL_ALIASES = ['学校', '学校名称', '校名', '参考单位', '单位名称', '毕业学校', '所在学校'];
     const TEACHER_ALIASES = ['教师姓名', '老师', '教师', '任课教师', '姓名'];
     const TEACHER_ID_ALIASES = ['教师编号', '教师工号', '工号', '编号', '手机号', '电话', '联系方式', 'teacherid', 'teacher_id'];
+    const TEACHER_SCOPE_ALIASES = ['任课范围', '授课范围', '分组', '层次', '走班', '备注', 'scope'];
+    const TEACHER_STUDENT_ID_ALIASES = ['学生考号', '考号名单', '学号名单', '学生编号', 'studentids', 'student_ids'];
+    const TEACHER_STUDENT_NAME_ALIASES = ['学生名单', '姓名名单', '学生姓名', 'studentnames', 'student_names'];
     const ZERO_WORDS = ['缺', 'ABS', '作弊', '违纪', '病假', '缓考', '取消', '零分', 'Q', 'CHE'];
     const CORE_GRADE9 = ['语文', '数学', '英语', '物理', '化学'];
     const STANDARD_FULL_MARKS = [30, 40, 50, 60, 70, 80, 90, 100, 120, 150, 160, 180, 200];
     const LOCAL_KEY = 'LOCAL_SCHOOL_SCORE_ANALYTICS_V1';
+    const LOCAL_DB_NAME = 'LOCAL_SCHOOL_SCORE_ANALYTICS_DB';
+    const LOCAL_DB_STORE = 'snapshots';
+    const LOCAL_DB_KEY = 'latest';
+    const HISTORY_LIMIT = 12;
 
     const GRADE_CONFIG = {
         6: {
@@ -76,6 +83,10 @@
         thresholds: {},
         blankScoreMode: 'zero',
         sourceMaxOverrides: {},
+        examSchemes: {},
+        scoreImportSources: [],
+        scoreColumnOverrides: {},
+        scoreMappingRows: [],
         subjectSourceHints: {},
         importStats: { duplicateStudents: 0, duplicateConflicts: [] },
         teachers: [],
@@ -90,6 +101,11 @@
         studentAlerts: [],
         scoreAdjustments: {},
         teacherCoverage: { matched: 0, unmatched: [] },
+        selectedClassName: '',
+        selectedStudentKey: '',
+        selectedTeacherKey: '',
+        examHistory: [],
+        selectedHistoryId: '',
         charts: {},
         logs: []
     };
@@ -110,7 +126,11 @@
             'teacher-status', 'pair-list', 'student-class-filter', 'student-subject-filter',
             'student-search', 'student-table', 'student-alert-grid', 'rail-grade-label', 'rail-total-label',
             'topbar-copy', 'school-select', 'subject-radar-note', 'blank-score-mode', 'score-rule-table',
-            'teacher-rank-subject-list'
+            'teacher-rank-subject-list', 'score-mapping-table', 'reset-exam-scheme-btn',
+            'class-drilldown-select', 'class-drilldown-panel', 'distribution-table',
+            'student-report-card', 'export-student-report-btn',
+            'teacher-explain-select', 'teacher-explain-panel',
+            'export-report-btn', 'history-name', 'save-history-btn', 'history-select', 'comparison-panel'
         ].forEach((id) => {
             els[toCamel(id)] = document.getElementById(id);
         });
@@ -167,6 +187,31 @@
         }
         if (els.scoreRuleTable) {
             els.scoreRuleTable.addEventListener('change', (event) => {
+                const maxInput = event.target.closest('[data-target-max-subject]');
+                if (maxInput) {
+                    const subject = maxInput.dataset.targetMaxSubject;
+                    const value = Number(maxInput.value);
+                    const scheme = ensureExamSchemeOverride();
+                    if (Number.isFinite(value) && value > 0) scheme.maxScores[subject] = value;
+                    else delete scheme.maxScores[subject];
+                    analyze();
+                    renderAll();
+                    log(`${subject} 配置满分调整为 ${Number.isFinite(value) && value > 0 ? value : '默认'}。`);
+                    return;
+                }
+                const totalInput = event.target.closest('[data-total-subject]');
+                if (totalInput) {
+                    const subject = totalInput.dataset.totalSubject;
+                    const scheme = ensureExamSchemeOverride();
+                    const set = new Set(Array.isArray(scheme.totalSubjects) ? scheme.totalSubjects : getDefaultTotalSubjectsForGrade(state.grade));
+                    if (totalInput.checked) set.add(subject);
+                    else set.delete(subject);
+                    scheme.totalSubjects = sortSubjects(Array.from(set));
+                    analyze();
+                    renderAll();
+                    log(`${subject} ${totalInput.checked ? '纳入' : '移出'}${currentConfig().totalLabel}。`);
+                    return;
+                }
                 const input = event.target.closest('[data-source-max-subject]');
                 if (!input) return;
                 const subject = input.dataset.sourceMaxSubject;
@@ -177,6 +222,27 @@
                 analyze();
                 renderAll();
                 log(`${subject} 原始满分调整为 ${Number.isFinite(value) && value > 0 ? value : '自动'}。`);
+            });
+        }
+        if (els.resetExamSchemeBtn) {
+            els.resetExamSchemeBtn.addEventListener('click', () => {
+                delete state.examSchemes[state.grade];
+                state.sourceMaxOverrides = Object.fromEntries(Object.entries(state.sourceMaxOverrides || {}).filter(([key]) => !key.startsWith(`${state.grade}__`)));
+                analyze();
+                renderAll();
+                log(`${currentConfig().label} 已恢复默认考试口径。`);
+            });
+        }
+        if (els.scoreMappingTable) {
+            els.scoreMappingTable.addEventListener('change', (event) => {
+                const select = event.target.closest('[data-score-map-subject]');
+                if (!select) return;
+                const key = scoreColumnOverrideKey(select.dataset.sourceId, select.dataset.scoreMapSubject);
+                if (select.value === 'auto') delete state.scoreColumnOverrides[key];
+                else state.scoreColumnOverrides[key] = Number(select.value);
+                parseScoreSources();
+                renderAll();
+                log(`${select.dataset.scoreMapSubject} 成绩列映射已更新。`);
             });
         }
         if (els.teacherRankSubjectList) {
@@ -205,6 +271,41 @@
             node.addEventListener('input', renderStudentTable);
             node.addEventListener('change', renderStudentTable);
         });
+        if (els.studentTable) {
+            els.studentTable.addEventListener('click', (event) => {
+                const button = event.target.closest('[data-student-report-key]');
+                if (!button) return;
+                state.selectedStudentKey = button.dataset.studentReportKey;
+                renderStudentReport();
+            });
+        }
+        if (els.exportStudentReportBtn) {
+            els.exportStudentReportBtn.addEventListener('click', exportStudentReportWorkbook);
+        }
+        if (els.classDrilldownSelect) {
+            els.classDrilldownSelect.addEventListener('change', () => {
+                state.selectedClassName = els.classDrilldownSelect.value;
+                renderClassDrilldown();
+            });
+        }
+        if (els.teacherExplainSelect) {
+            els.teacherExplainSelect.addEventListener('change', () => {
+                state.selectedTeacherKey = els.teacherExplainSelect.value;
+                renderTeacherExplanation();
+            });
+        }
+        if (els.exportReportBtn) {
+            els.exportReportBtn.addEventListener('click', exportReportWorkbook);
+        }
+        if (els.saveHistoryBtn) {
+            els.saveHistoryBtn.addEventListener('click', () => saveCurrentExamToHistory());
+        }
+        if (els.historySelect) {
+            els.historySelect.addEventListener('change', () => {
+                state.selectedHistoryId = els.historySelect.value;
+                renderExamComparison();
+            });
+        }
     }
 
     function switchView(id) {
@@ -215,25 +316,24 @@
 
     async function loadScoreFiles(files) {
         try {
-            state.students = [];
-            state.subjects = [];
-            state.thresholds = {};
-            state.subjectSourceHints = {};
-            state.importStats = { duplicateStudents: 0, duplicateConflicts: [] };
+            resetScoreDataForImport();
             state.teacherRankSubjects = [];
             state.teacherRankSubjectsCustom = false;
-            for (const file of files) {
+            state.scoreImportSources = [];
+            state.scoreColumnOverrides = {};
+            for (const [fileIndex, file] of files.entries()) {
                 const buffer = await file.arrayBuffer();
                 const workbook = XLSX.read(buffer, { type: 'array' });
-                workbook.SheetNames.forEach((sheetName) => {
+                workbook.SheetNames.forEach((sheetName, sheetIndex) => {
                     const rows = worksheetToRows(workbook.Sheets[sheetName]);
-                    parseScoreRows(rows, sheetName);
+                    state.scoreImportSources.push(buildScoreImportSource(rows, {
+                        fileName: file.name,
+                        sheetName,
+                        sourceIndex: `${fileIndex}-${sheetIndex}`
+                    }));
                 });
             }
-            state.subjects = sortSubjects([...new Set(state.subjects)]);
-            mergeDuplicateStudents();
-            ensureActiveSchool();
-            analyze();
+            parseScoreSources();
             log(`成绩导入完成：${state.students.length} 名学生，${getAnalysisStudents().length} 名进入当前年级分析，${getClasses().length} 个班级，${getAnalysisSubjects().length} 个学科${state.importStats.duplicateStudents ? `，合并重复 ${state.importStats.duplicateStudents} 条` : ''}${state.importStats.duplicateConflicts.length ? `，发现冲突 ${state.importStats.duplicateConflicts.length} 项` : ''}。`);
             toast('成绩解析完成。', 'ok');
             renderAll();
@@ -241,6 +341,45 @@
             console.error(error);
             toast(`成绩解析失败：${error.message}`, 'warn');
         }
+    }
+
+    function resetScoreDataForImport() {
+        state.students = [];
+        state.subjects = [];
+        state.thresholds = {};
+        state.subjectSourceHints = {};
+        state.importStats = { duplicateStudents: 0, duplicateConflicts: [] };
+        state.scoreMappingRows = [];
+        state.selectedClassName = '';
+        state.selectedStudentKey = '';
+    }
+
+    function buildScoreImportSource(rows, meta) {
+        const headerIndex = findHeaderRow(rows);
+        const headers = headerIndex >= 0 ? (rows[headerIndex] || []).map((cell) => cleanHeader(cell)) : [];
+        return {
+            id: `${cleanText(meta.fileName || '文件')}__${cleanText(meta.sheetName || 'Sheet')}__${meta.sourceIndex || state.scoreImportSources.length}`,
+            fileName: cleanText(meta.fileName || '成绩文件'),
+            sheetName: cleanText(meta.sheetName || 'Sheet'),
+            defaultSchool: cleanText(meta.sheetName || meta.fileName || '成绩'),
+            rows,
+            headerIndex,
+            headers,
+            subjectColumns: buildSubjectColumns(headers)
+        };
+    }
+
+    function parseScoreSources() {
+        const sources = state.scoreImportSources.slice();
+        resetScoreDataForImport();
+        state.scoreImportSources = sources;
+        sources.forEach((source) => {
+            parseScoreRows(source.rows, source.defaultSchool, { sourceId: source.id });
+        });
+        state.subjects = sortSubjects([...new Set(state.subjects)]);
+        mergeDuplicateStudents();
+        ensureActiveSchool();
+        analyze();
     }
 
     async function loadTeacherFile(file) {
@@ -286,22 +425,24 @@
         return rows;
     }
 
-    function parseScoreRows(rows, defaultSchool) {
+    function parseScoreRows(rows, defaultSchool, options = {}) {
         if (!Array.isArray(rows) || rows.length < 2) return;
         const headerIndex = findHeaderRow(rows);
         if (headerIndex === -1) return;
         const headers = rows[headerIndex].map((cell) => cleanHeader(cell));
+        const subjectColumns = resolveSubjectColumnsForSource(buildSubjectColumns(headers), options.sourceId);
         const idx = {
             name: findBestHeader(headers, NAME_ALIASES),
             id: findBestHeader(headers, ID_ALIASES),
             className: findBestHeader(headers, CLASS_ALIASES),
             school: findBestHeader(headers, SCHOOL_ALIASES),
-            subjects: buildSubjectColumns(headers)
+            subjects: subjectColumns
         };
 
         Object.keys(idx.subjects).forEach((subject) => {
             if (!state.subjects.includes(subject)) state.subjects.push(subject);
         });
+        registerScoreMappingRows(options.sourceId, defaultSchool, headers, idx.subjects);
 
         if (idx.name === -1) return;
         for (let rowIndex = headerIndex + 1; rowIndex < rows.length; rowIndex += 1) {
@@ -360,6 +501,44 @@
         }
     }
 
+    function resolveSubjectColumnsForSource(subjectColumns, sourceId) {
+        if (!sourceId) return subjectColumns;
+        const result = {};
+        Object.entries(subjectColumns).forEach(([subject, columnGroup]) => {
+            const override = state.scoreColumnOverrides?.[scoreColumnOverrideKey(sourceId, subject)];
+            if (Number.isInteger(Number(override)) && Number(override) >= 0) {
+                result[subject] = {
+                    final: [Number(override)],
+                    components: [],
+                    candidates: columnGroup.candidates || []
+                };
+                return;
+            }
+            result[subject] = columnGroup;
+        });
+        return result;
+    }
+
+    function registerScoreMappingRows(sourceId, defaultSchool, headers, subjectColumns) {
+        if (!sourceId) return;
+        const source = state.scoreImportSources.find((item) => item.id === sourceId);
+        Object.entries(source?.subjectColumns || subjectColumns).forEach(([subject, baseGroup]) => {
+            const currentGroup = subjectColumns[subject] || baseGroup;
+            const override = state.scoreColumnOverrides?.[scoreColumnOverrideKey(sourceId, subject)];
+            state.scoreMappingRows.push({
+                sourceId,
+                fileName: source?.fileName || defaultSchool || '',
+                sheetName: source?.sheetName || defaultSchool || '',
+                subject,
+                autoColumns: describeSubjectColumnSelection(headers, baseGroup),
+                currentColumns: describeSubjectColumnSelection(headers, currentGroup),
+                sourceHint: getScoreSourceHint(headers, selectSubjectScoreCells([], currentGroup)),
+                override: Number.isInteger(Number(override)) ? Number(override) : null,
+                candidates: baseGroup.candidates || []
+            });
+        });
+    }
+
     function selectSubjectScoreCells(row, columnGroup) {
         if (Array.isArray(columnGroup)) {
             return columnGroup.map((index) => ({ index, value: row[index] }));
@@ -377,6 +556,16 @@
         if (/折合|折算|折后|折分|赋分/.test(names)) return 'converted';
         if (/卷面|原始|原分|一卷|二卷|三卷|客观|主观|选择|非选择|小题|卷[一二三四五六七八九十]/.test(names)) return 'raw';
         return 'plain';
+    }
+
+    function describeSubjectColumnSelection(headers, columnGroup) {
+        const cells = selectSubjectScoreCells([], columnGroup || {});
+        const names = cells.map((cell) => cleanText(headers[cell.index])).filter(Boolean);
+        return names.length ? names.join(' + ') : '未识别';
+    }
+
+    function scoreColumnOverrideKey(sourceId, subject) {
+        return `${sourceId}__${subject}`;
     }
 
     function registerSubjectSourceHint(subject, hint) {
@@ -461,6 +650,9 @@
         const subjectIndex = findBestHeader(headers, ['学科', '科目', '课程', 'subject']);
         const teacherIndex = findBestHeader(headers, TEACHER_ALIASES);
         const teacherIdIndex = findBestHeader(headers, TEACHER_ID_ALIASES);
+        const scopeIndex = findBestHeader(headers, TEACHER_SCOPE_ALIASES);
+        const studentIdIndex = findBestHeader(headers, TEACHER_STUDENT_ID_ALIASES);
+        const studentNameIndex = findBestHeader(headers, TEACHER_STUDENT_NAME_ALIASES);
         if (classIndex === -1) return [];
         if (subjectIndex === -1 || teacherIndex === -1) {
             return parseWideTeacherRows(rows, headerIndex, headers, classIndex);
@@ -471,8 +663,13 @@
             const className = normalizeClass(row[classIndex]);
             const subject = normalizeSubject(row[subjectIndex]);
             const identity = parseTeacherIdentity(row[teacherIndex], teacherIdIndex >= 0 ? row[teacherIdIndex] : '');
+            const scope = parseTeacherScope(
+                scopeIndex >= 0 ? row[scopeIndex] : '',
+                studentIdIndex >= 0 ? row[studentIdIndex] : '',
+                studentNameIndex >= 0 ? row[studentNameIndex] : ''
+            );
             if (!className || !subject || !identity.teacher) continue;
-            result.push({ className, subject, ...identity });
+            result.push({ className, subject, ...identity, ...scope });
         }
         return result;
     }
@@ -524,6 +721,21 @@
 
     function normalizeTeacherName(value) {
         return cleanText(value).replace(/\s+/g, '');
+    }
+
+    function parseTeacherScope(scopeValue, idValue, nameValue) {
+        const scopeText = cleanText(scopeValue);
+        return {
+            scopeText,
+            studentIds: splitRosterList(idValue),
+            studentNames: splitRosterList(nameValue).map(cleanName).filter(Boolean)
+        };
+    }
+
+    function splitRosterList(value) {
+        const text = cleanText(value);
+        if (!text) return [];
+        return [...new Set(text.split(/[、，,；;\/\s]+/).map((item) => cleanText(item)).filter(Boolean))];
     }
 
     function analyze() {
@@ -714,11 +926,21 @@
             row.balanceScore = calculateClassBalanceScore(row);
             const lowPenalty = clamp(row.metrics.total.lowRate * 18, 0, 10);
             row.qualityScore = round(clamp(row.rateScore * 0.46 + row.absoluteScore * 0.40 + row.balanceScore * 0.14 - lowPenalty, 0, 100), 2);
+            row.riskFlags = buildClassRiskFlags(row);
         });
         assignRanks(rows, (row) => row.qualityScore, (row, rank) => {
             row.rank = rank;
         });
         state.classRows = rows.sort((a, b) => a.rank - b.rank || naturalCompare(a.className, b.className));
+    }
+
+    function buildClassRiskFlags(row) {
+        const flags = [];
+        if (row.studentCount < 20) flags.push('样本少');
+        if (row.studentCount && row.completeTotalCount / row.studentCount < 0.85) flags.push('总分有效偏低');
+        if (row.metrics.total.lowRate >= 0.25) flags.push('低分率高');
+        if (row.balanceScore < 70) flags.push('学科不均衡');
+        return flags;
     }
 
     function buildSubjectRows() {
@@ -782,17 +1004,20 @@
                     subject: assignment.subject,
                     assignedClasses: new Set(),
                     matchedClasses: new Set(),
+                    scopeTexts: new Set(),
                     students: []
                 });
             }
             const group = teacherSubjectGroups.get(key);
             group.assignedClasses.add(assignment.className);
+            if (assignment.scopeText) group.scopeTexts.add(assignment.scopeText);
             const classStudents = studentByClass.get(assignment.className) || [];
-            const matchedStudents = classStudents.filter((student) => Number.isFinite(Number(student.scores[assignment.subject])));
-            if (!classStudents.length || !matchedStudents.length) {
+            const scopedStudents = filterStudentsByTeacherScope(classStudents, assignment);
+            const matchedStudents = scopedStudents.filter((student) => Number.isFinite(Number(student.scores[assignment.subject])));
+            if (!classStudents.length || !scopedStudents.length || !matchedStudents.length) {
                 unmatchedAssignments.push({
                     ...assignment,
-                    reason: !classStudents.length ? '班级未匹配' : '该班无本学科成绩'
+                    reason: !classStudents.length ? '班级未匹配' : (!scopedStudents.length ? '任课范围未匹配' : '该班无本学科成绩')
                 });
             } else {
                 group.matchedClasses.add(assignment.className);
@@ -817,6 +1042,7 @@
                 teacherKey: group.teacherKey,
                 subject: group.subject,
                 classes: Array.from(group.matchedClasses).sort(naturalCompare),
+                scopeText: Array.from(group.scopeTexts).join('、'),
                 studentCount: summary.count,
                 avg: summary.avg,
                 excRate: summary.excRate,
@@ -831,7 +1057,8 @@
                 fairScore: 0,
                 subjectRank: 0,
                 relativeScore: 80,
-                finalUnitScore: 0
+                finalUnitScore: 0,
+                riskFlags: []
             };
             if (!bySubject.has(row.subject)) bySubject.set(row.subject, []);
             bySubject.get(row.subject).push(row);
@@ -869,6 +1096,7 @@
                     : 80;
                 row.relativeScore = scoreRelative * 0.7 + rankRelative * 0.3;
                 row.finalUnitScore = row.fairScore * 0.88 + row.relativeScore * 0.12;
+                row.riskFlags = buildTeacherRiskFlags(row);
             });
         });
 
@@ -896,7 +1124,8 @@
         const finalRows = Array.from(byTeacher.values()).map((row) => ({
             ...row,
             overallScore: row.totalWeight ? row.overallScore / row.totalWeight : 0,
-            subjectText: row.subjects.map((item) => `${item.subject}(${item.classes.join(',')})`).join('；')
+            subjectText: row.subjects.map((item) => `${item.subject}(${item.classes.join(',')}${item.scopeText ? `/${item.scopeText}` : ''})`).join('；'),
+            riskFlags: [...new Set(row.subjects.flatMap((item) => item.riskFlags || []))]
         }));
         assignRanks(finalRows, (row) => row.overallScore, (row, rank) => {
             row.rank = rank;
@@ -961,6 +1190,23 @@
             excludedSubjects: analysisSubjects.filter((subject) => !rankedSubjects.includes(subject)),
             teacherCount: uniqueBy(assignments, (item) => item.teacherKey || item.teacher).length
         };
+    }
+
+    function filterStudentsByTeacherScope(students, assignment) {
+        const ids = new Set((assignment.studentIds || []).map((item) => cleanText(item)));
+        const names = new Set((assignment.studentNames || []).map((item) => cleanName(item)));
+        if (!ids.size && !names.size) return students;
+        return students.filter((student) => ids.has(cleanText(student.id)) || names.has(cleanName(student.name)));
+    }
+
+    function buildTeacherRiskFlags(row) {
+        const flags = [];
+        if (row.studentCount < 15) flags.push('样本少');
+        if (row.confidence < 0.92) flags.push('置信低');
+        if (row.lowRate >= 0.25) flags.push('低分率高');
+        if (Math.abs(row.baselineAdjustment) >= 8) flags.push('基础波动大');
+        if (row.scopeText) flags.push('分组任课');
+        return flags;
     }
 
     function buildStudentAlerts() {
@@ -1029,14 +1275,20 @@
         renderCharts();
         renderInsights();
         renderImportLog();
+        renderScoreMapping();
         renderScoreRules();
         renderClassTable();
+        renderClassDrilldown();
         renderSubjectMatrix();
+        renderDistributionTable();
         renderTeacherTables();
+        renderTeacherExplanation();
         renderPairing();
         renderStudentFilters();
         renderStudentTable();
+        renderStudentReport();
         renderStudentAlerts();
+        renderExamComparison();
     }
 
     function renderShell() {
@@ -1194,6 +1446,41 @@
         return parts.length ? parts.join('；') : '未发现明显导入风险。';
     }
 
+    function renderScoreMapping() {
+        if (!els.scoreMappingTable) return;
+        els.scoreMappingTable.querySelector('thead').innerHTML = `
+            <tr>
+                <th>文件</th><th>Sheet</th><th>学科</th><th>自动识别列</th><th>当前采用列</th><th>手动指定</th><th>来源判断</th>
+            </tr>
+        `;
+        const rows = state.scoreMappingRows || [];
+        els.scoreMappingTable.querySelector('tbody').innerHTML = rows.length
+            ? rows.map((row) => `
+                <tr>
+                    <td>${escapeHtml(row.fileName)}</td>
+                    <td>${escapeHtml(row.sheetName)}</td>
+                    <td><strong>${escapeHtml(row.subject)}</strong></td>
+                    <td>${escapeHtml(row.autoColumns)}</td>
+                    <td>${escapeHtml(row.currentColumns)}</td>
+                    <td>
+                        <select class="mapping-select" data-source-id="${escapeAttr(row.sourceId)}" data-score-map-subject="${escapeAttr(row.subject)}">
+                            <option value="auto">自动：${escapeHtml(row.autoColumns)}</option>
+                            ${(row.candidates || []).map((candidate) => `
+                                <option value="${candidate.index}" ${row.override === candidate.index ? 'selected' : ''}>${escapeHtml(candidate.header)}（第 ${candidate.index + 1} 列）</option>
+                            `).join('')}
+                        </select>
+                    </td>
+                    <td>${scoreSourceHintText(row.sourceHint)}</td>
+                </tr>
+            `).join('')
+            : emptyRow(7, '选择并解析成绩文件后显示列映射。');
+    }
+
+    function scoreSourceHintText(value) {
+        const map = { converted: '已折算列', raw: '原始/分卷列', plain: '普通成绩列' };
+        return map[value] || '普通成绩列';
+    }
+
     function renderScoreRules() {
         if (els.blankScoreMode) els.blankScoreMode.value = state.blankScoreMode || 'zero';
         if (!els.scoreRuleTable) return;
@@ -1216,13 +1503,20 @@
                 return `
                     <tr>
                         <td>${escapeHtml(subject)}</td>
-                        <td>${getSubjectMaxScore(subject)}</td>
+                        <td>
+                            <input class="score-rule-input" type="number" min="1" step="0.1" value="${escapeAttr(getSubjectMaxScore(subject))}" data-target-max-subject="${escapeAttr(subject)}">
+                        </td>
                         <td>${formatScore(rule.observedMax, 1)}</td>
                         <td>
                             <input class="score-rule-input" type="number" min="1" step="0.1" placeholder="自动" value="${escapeAttr(inputValue)}" data-source-max-subject="${escapeAttr(subject)}">
                         </td>
                         <td>${Number.isFinite(Number(rule.scale)) ? Number(rule.scale).toFixed(4) : '-'}</td>
-                        <td>${totalIncluded ? '计入总分' : '单科诊断'}</td>
+                        <td>
+                            <label class="setting-control">
+                                <input type="checkbox" data-total-subject="${escapeAttr(subject)}" ${totalIncluded ? 'checked' : ''}>
+                                <span>${totalIncluded ? '计入总分' : '单科诊断'}</span>
+                            </label>
+                        </td>
                     </tr>
                 `;
             }).join('')
@@ -1233,7 +1527,7 @@
         const table = els.classTable;
         table.querySelector('thead').innerHTML = `
             <tr>
-                <th>排名</th><th>班级</th><th>人数</th><th>总分有效</th><th>总分均分</th><th>优秀率</th><th>达标率(前50%)</th><th>卷面及格率</th><th>低分率</th><th>学科均衡</th><th>综合分</th>
+                <th>排名</th><th>班级</th><th>人数</th><th>总分有效</th><th>总分均分</th><th>优秀率</th><th>达标率(前50%)</th><th>卷面及格率</th><th>低分率</th><th>学科均衡</th><th>综合分</th><th>风险提示</th>
             </tr>
         `;
         table.querySelector('tbody').innerHTML = state.classRows.length
@@ -1250,9 +1544,55 @@
                     <td>${percent(row.metrics.total.lowRate)}</td>
                     <td>${row.balanceScore.toFixed(1)}</td>
                     <td><strong>${row.qualityScore.toFixed(1)}</strong></td>
+                    <td>${riskText(row.riskFlags)}</td>
                 </tr>
             `).join('')
-            : emptyRow(11);
+            : emptyRow(12);
+    }
+
+    function renderClassDrilldown() {
+        if (!els.classDrilldownSelect || !els.classDrilldownPanel) return;
+        const classes = state.classRows.map((row) => row.className);
+        const keep = classes.includes(state.selectedClassName) ? state.selectedClassName : (classes[0] || '');
+        state.selectedClassName = keep;
+        els.classDrilldownSelect.innerHTML = classes.length
+            ? classes.map((className) => `<option value="${escapeAttr(className)}">${escapeHtml(className)}</option>`).join('')
+            : '<option value="">暂无班级</option>';
+        els.classDrilldownSelect.value = keep;
+        const row = state.classRows.find((item) => item.className === keep);
+        if (!row) {
+            els.classDrilldownPanel.innerHTML = '<div class="empty">导入成绩后显示班级下钻。</div>';
+            return;
+        }
+        const weakSubjects = Object.entries(row.subjects)
+            .map(([subject, metric]) => ({ subject, ...metric, rate: getSubjectMaxScore(subject) ? metric.avg / getSubjectMaxScore(subject) : 0 }))
+            .sort((a, b) => a.rate - b.rate)
+            .slice(0, 3);
+        const students = getAnalysisStudents().filter((student) => student.className === row.className);
+        const lowStudents = students
+            .filter((student) => Number.isFinite(Number(student.total)))
+            .sort((a, b) => a.total - b.total)
+            .slice(0, 8);
+        els.classDrilldownPanel.innerHTML = `
+            <div class="detail-grid">
+                ${detailItem('班级', row.className)}
+                ${detailItem('总分均分', formatScore(row.metrics.total.avg, 2))}
+                ${detailItem('有效/人数', `${row.completeTotalCount}/${row.studentCount}`)}
+                ${detailItem('风险', row.riskFlags?.length ? row.riskFlags.join('、') : '正常')}
+            </div>
+            <table class="mini-table">
+                <thead><tr><th>薄弱学科</th><th>均分</th><th>得分率</th><th>班内优秀率</th><th>卷面及格率</th></tr></thead>
+                <tbody>${weakSubjects.map((item) => `
+                    <tr><td>${escapeHtml(item.subject)}</td><td>${formatScore(item.avg, 2)}</td><td>${percent(item.rate)}</td><td>${percent(item.excRate)}</td><td>${formatNullablePercent(item.paperPassRate)}</td></tr>
+                `).join('') || emptyRow(5)}</tbody>
+            </table>
+            <table class="mini-table">
+                <thead><tr><th>重点关注学生</th><th>总分</th><th>班排</th><th>缺少总分科目</th></tr></thead>
+                <tbody>${lowStudents.map((student) => `
+                    <tr><td>${escapeHtml(student.name)}</td><td>${formatScore(student.total, 2)}</td><td>${student.ranks?.total?.class || '-'}</td><td>${escapeHtml((student.totalMissingSubjects || []).join('、') || '-')}</td></tr>
+                `).join('') || emptyRow(4)}</tbody>
+            </table>
+        `;
     }
 
     function renderSubjectMatrix() {
@@ -1271,6 +1611,25 @@
                 </tr>
             `).join('')
             : emptyRow(Math.max(2, classes.length + 2));
+    }
+
+    function renderDistributionTable() {
+        if (!els.distributionTable) return;
+        const rows = buildDistributionRows();
+        els.distributionTable.querySelector('thead').innerHTML = `
+            <tr>
+                <th>项目</th><th>满分</th><th>人数</th><th>均分</th><th>标准差</th><th>最低</th><th>Q1</th><th>中位数</th><th>Q3</th><th>最高</th><th>优秀段</th><th>良好段</th><th>及格段</th><th>低分段</th>
+            </tr>
+        `;
+        els.distributionTable.querySelector('tbody').innerHTML = rows.length
+            ? rows.map((row) => `
+                <tr>
+                    <td>${escapeHtml(row.label)}</td><td>${row.maxScore}</td><td>${row.count}</td><td>${formatScore(row.avg, 2)}</td><td>${formatScore(row.sd, 2)}</td>
+                    <td>${formatScore(row.min, 2)}</td><td>${formatScore(row.q1, 2)}</td><td>${formatScore(row.median, 2)}</td><td>${formatScore(row.q3, 2)}</td><td>${formatScore(row.max, 2)}</td>
+                    <td>${percent(row.bandExcellent)}</td><td>${percent(row.bandGood)}</td><td>${percent(row.bandPass)}</td><td>${percent(row.bandLow)}</td>
+                </tr>
+            `).join('')
+            : emptyRow(14);
     }
 
     function renderTeacherTables() {
@@ -1297,7 +1656,7 @@
         const table = els.teacherFinalTable;
         table.querySelector('thead').innerHTML = `
             <tr>
-                <th>最终排名</th><th>教师</th><th>教师编号</th><th>最终分</th><th>任教学科 / 班级</th><th>覆盖学生</th><th>学科质量分</th>
+                <th>最终排名</th><th>教师</th><th>教师编号</th><th>最终分</th><th>任教学科 / 班级</th><th>覆盖学生</th><th>风险提示</th><th>学科质量分</th>
             </tr>
         `;
         table.querySelector('tbody').innerHTML = state.finalTeacherRows.length
@@ -1309,17 +1668,18 @@
                     <td>${row.overallScore.toFixed(1)}</td>
                     <td>${escapeHtml(row.subjectText)}</td>
                     <td>${row.totalStudents}</td>
+                    <td>${riskText(row.riskFlags)}</td>
                     <td>${row.subjects.map((item) => `${escapeHtml(item.subject)} ${item.fairScore.toFixed(1)} / 科内${item.subjectRank}`).join('<br>')}</td>
                 </tr>
             `).join('')
-            : emptyRow(7);
+            : emptyRow(8);
     }
 
     function renderTeacherDetailTable() {
         const table = els.teacherDetailTable;
         table.querySelector('thead').innerHTML = `
             <tr>
-                <th>学科排名</th><th>教师</th><th>学科</th><th>总榜</th><th>班级</th><th>人数</th><th>均分</th><th>优秀率</th><th>达标率(前50%)</th><th>卷面及格率</th><th>基础校正</th><th>置信系数</th><th>质量分</th>
+                <th>学科排名</th><th>教师</th><th>学科</th><th>总榜</th><th>班级/范围</th><th>人数</th><th>均分</th><th>优秀率</th><th>达标率(前50%)</th><th>卷面及格率</th><th>基础校正</th><th>置信系数</th><th>质量分</th><th>风险提示</th>
             </tr>
         `;
         table.querySelector('tbody').innerHTML = state.teacherRows.length
@@ -1329,7 +1689,7 @@
                     <td>${escapeHtml(row.teacher)}</td>
                     <td>${escapeHtml(row.subject)}</td>
                     <td>${row.inFinalRank ? '纳入' : '排除'}</td>
-                    <td>${escapeHtml(row.classes.join('、'))}</td>
+                    <td>${escapeHtml(row.classes.join('、') + (row.scopeText ? ` / ${row.scopeText}` : ''))}</td>
                     <td>${row.studentCount}</td>
                     <td>${formatScore(row.avg, 2)}</td>
                     <td>${percent(row.excRate)}</td>
@@ -1338,9 +1698,53 @@
                     <td>${signed(row.baselineAdjustment)}</td>
                     <td>${row.confidence.toFixed(2)}</td>
                     <td><strong>${row.fairScore.toFixed(1)}</strong></td>
+                    <td>${riskText(row.riskFlags)}</td>
                 </tr>
             `).join('')
-            : emptyRow(13);
+            : emptyRow(14);
+    }
+
+    function renderTeacherExplanation() {
+        if (!els.teacherExplainSelect || !els.teacherExplainPanel) return;
+        const rows = state.finalTeacherRows;
+        const keep = rows.some((row) => row.teacherKey === state.selectedTeacherKey) ? state.selectedTeacherKey : (rows[0]?.teacherKey || '');
+        state.selectedTeacherKey = keep;
+        els.teacherExplainSelect.innerHTML = rows.length
+            ? rows.map((row) => `<option value="${escapeAttr(row.teacherKey)}">${escapeHtml(row.teacher)}${row.teacherId ? `(${escapeHtml(row.teacherId)})` : ''}</option>`).join('')
+            : '<option value="">暂无教师</option>';
+        els.teacherExplainSelect.value = keep;
+        const teacher = rows.find((row) => row.teacherKey === keep);
+        if (!teacher) {
+            els.teacherExplainPanel.innerHTML = '<div class="empty">导入任课表后显示教师排名解释。</div>';
+            return;
+        }
+        els.teacherExplainPanel.innerHTML = `
+            <div class="detail-grid">
+                ${detailItem('教师', teacher.teacher)}
+                ${detailItem('最终分', teacher.overallScore.toFixed(2))}
+                ${detailItem('覆盖学生', teacher.totalStudents)}
+                ${detailItem('风险', teacher.riskFlags?.length ? teacher.riskFlags.join('、') : '正常')}
+            </div>
+            <table class="mini-table">
+                <thead><tr><th>学科</th><th>班级/范围</th><th>人数</th><th>均分</th><th>质量分</th><th>科内相对分</th><th>学科项分</th><th>权重</th><th>校正/风险</th></tr></thead>
+                <tbody>${teacher.subjects.map((item) => {
+                    const weight = Math.max(item.studentCount, 1) * item.confidence;
+                    return `
+                        <tr>
+                            <td>${escapeHtml(item.subject)}</td>
+                            <td>${escapeHtml(item.classes.join('、') + (item.scopeText ? ` / ${item.scopeText}` : ''))}</td>
+                            <td>${item.studentCount}</td>
+                            <td>${formatScore(item.avg, 2)}</td>
+                            <td>${item.fairScore.toFixed(2)}</td>
+                            <td>${item.relativeScore.toFixed(2)}</td>
+                            <td>${item.finalUnitScore.toFixed(2)}</td>
+                            <td>${weight.toFixed(2)}</td>
+                            <td>${signed(item.baselineAdjustment)}；${riskText(item.riskFlags)}</td>
+                        </tr>
+                    `;
+                }).join('')}</tbody>
+            </table>
+        `;
     }
 
     function renderPairing() {
@@ -1390,7 +1794,7 @@
         const table = els.studentTable;
         table.querySelector('thead').innerHTML = `
             <tr>
-                <th>年级排名</th><th>班级排名</th><th>班级</th><th>姓名</th><th>考号</th><th>${escapeHtml(subject === 'total' ? currentConfig().totalLabel : subject)}</th><th>总分</th>
+                <th>年级排名</th><th>班级排名</th><th>班级</th><th>姓名</th><th>考号</th><th>${escapeHtml(subject === 'total' ? currentConfig().totalLabel : subject)}</th><th>总分</th><th>报告</th>
             </tr>
         `;
         table.querySelector('tbody').innerHTML = rows.length
@@ -1405,10 +1809,40 @@
                         <td>${escapeHtml(student.id || '-')}</td>
                         <td>${formatScore(score, 2)}</td>
                         <td>${formatScore(student.total, 2)}</td>
+                        <td><button class="ghost-button" data-student-report-key="${escapeAttr(studentKey(student))}">报告</button></td>
                     </tr>
                 `;
             }).join('')
-            : emptyRow(7);
+            : emptyRow(8);
+        if (!state.selectedStudentKey && rows[0]) state.selectedStudentKey = studentKey(rows[0]);
+    }
+
+    function renderStudentReport() {
+        if (!els.studentReportCard) return;
+        const student = getSelectedStudent();
+        if (!student) {
+            els.studentReportCard.innerHTML = '<div class="empty">导入成绩后可生成学生个人报告。</div>';
+            return;
+        }
+        const reportRows = buildStudentReportRows(student);
+        const subjectHeaderIndex = reportRows.findIndex((row) => row[0] === '学科');
+        const subjectRows = subjectHeaderIndex >= 0 ? reportRows.slice(subjectHeaderIndex + 1) : [];
+        const weak = subjectRows.slice().sort((a, b) => Number(a[7]) - Number(b[7]))[0];
+        const strong = subjectRows.slice().sort((a, b) => Number(b[7]) - Number(a[7]))[0];
+        els.studentReportCard.innerHTML = `
+            <div class="detail-grid">
+                ${detailItem('学生', `${student.className} ${student.name}`)}
+                ${detailItem(currentConfig().totalLabel, formatScore(student.total, 2))}
+                ${detailItem('总分校排/班排', `${student.ranks?.total?.grade || '-'}/${student.ranks?.total?.class || '-'}`)}
+                ${detailItem('优势/短板', `${strong?.[0] || '-'} / ${weak?.[0] || '-'}`)}
+            </div>
+            <table class="mini-table">
+                <thead><tr><th>学科</th><th>分数</th><th>校排</th><th>班排</th><th>距优秀线</th><th>距达标线</th><th>得分率</th><th>判断</th></tr></thead>
+                <tbody>${subjectRows.map((row) => `
+                    <tr><td>${escapeHtml(row[0])}</td><td>${row[1]}</td><td>${row[2]}</td><td>${row[3]}</td><td>${row[4]}</td><td>${row[5]}</td><td>${percent(Number(row[7]) / 100)}</td><td>${escapeHtml(row[8])}</td></tr>
+                `).join('') || emptyRow(8)}</tbody>
+            </table>
+        `;
     }
 
     function renderStudentAlerts() {
@@ -1418,6 +1852,30 @@
                 `${item.student.className} ${item.student.name}：${item.score.toFixed(1)} 分，${item.type === '偏科提醒' ? `单科年级第 ${item.gap} 名` : `差 ${item.gap} 分`}`
             )).join('')
             : insightCard('暂无名单', '导入成绩后自动筛选临界生和偏科学生。');
+    }
+
+    function renderExamComparison() {
+        if (!els.historySelect || !els.comparisonPanel) return;
+        const history = state.examHistory || [];
+        const keep = history.some((item) => item.id === state.selectedHistoryId) ? state.selectedHistoryId : (history[0]?.id || '');
+        state.selectedHistoryId = keep;
+        els.historySelect.innerHTML = history.length
+            ? history.map((item) => `<option value="${escapeAttr(item.id)}">${escapeHtml(item.name)}</option>`).join('')
+            : '<option value="">暂无历史</option>';
+        els.historySelect.value = keep;
+        const rows = buildExamComparisonRows().slice(1);
+        if (!rows.length) {
+            els.comparisonPanel.innerHTML = '<div class="empty">先保存一次当前考试，下一次导入成绩后即可做对比。</div>';
+            return;
+        }
+        els.comparisonPanel.innerHTML = `
+            <table class="mini-table">
+                <thead><tr><th>类型</th><th>对象</th><th>本次</th><th>基准</th><th>变化</th><th>说明</th></tr></thead>
+                <tbody>${rows.slice(0, 24).map((row) => `
+                    <tr><td>${escapeHtml(row[0])}</td><td>${escapeHtml(row[1])}</td><td>${row[2]}</td><td>${row[3]}</td><td>${row[4]}</td><td>${escapeHtml(row[5])}</td></tr>
+                `).join('')}</tbody>
+            </table>
+        `;
     }
 
     function downloadScoreTemplate() {
@@ -1434,10 +1892,10 @@
 
     function downloadTeacherTemplate() {
         const subjects = currentConfig().templateSubjects;
-        const rows = [['班级', '学科', '教师姓名', '教师编号']];
+        const rows = [['班级', '学科', '教师姓名', '教师编号', '任课范围', '学生考号', '学生名单']];
         ['01', '02'].forEach((classNo, classIndex) => {
             subjects.forEach((subject, subjectIndex) => {
-                rows.push([`${state.grade}${classNo}`, subject, `${subject}教师${classIndex + subjectIndex + 1}`, `${subject.slice(0, 1)}${classIndex + subjectIndex + 1}`]);
+                rows.push([`${state.grade}${classNo}`, subject, `${subject}教师${classIndex + subjectIndex + 1}`, `${subject.slice(0, 1)}${classIndex + subjectIndex + 1}`, '', '', '']);
             });
         });
         writeWorkbook('教师任课信息_导入模板.xlsx', [{ name: '任课表', rows }]);
@@ -1450,8 +1908,8 @@
             {
                 name: '班级总览',
                 rows: [
-                    ['排名', '班级', '人数', '总分有效人数', '总分均分', '优秀率', '达标率(前50%)', '卷面及格率', '低分率', '相对两率一分', '绝对达成分', '学科均衡', '综合分'],
-                    ...state.classRows.map((row) => [row.rank, row.className, row.studentCount, row.completeTotalCount, round(row.metrics.total.avg, 2), row.metrics.total.excRate, row.metrics.total.passRate, row.metrics.total.paperPassRate, row.metrics.total.lowRate, round(row.rateScore, 2), round(row.absoluteScore, 2), round(row.balanceScore, 2), row.qualityScore])
+                    ['排名', '班级', '人数', '总分有效人数', '总分均分', '优秀率', '达标率(前50%)', '卷面及格率', '低分率', '相对两率一分', '绝对达成分', '学科均衡', '综合分', '风险提示'],
+                    ...state.classRows.map((row) => [row.rank, row.className, row.studentCount, row.completeTotalCount, round(row.metrics.total.avg, 2), row.metrics.total.excRate, row.metrics.total.passRate, row.metrics.total.paperPassRate, row.metrics.total.lowRate, round(row.rateScore, 2), round(row.absoluteScore, 2), round(row.balanceScore, 2), row.qualityScore, (row.riskFlags || []).join('、')])
                 ]
             },
             {
@@ -1460,6 +1918,10 @@
                     ['学科', '满分', '人数', '均分', '优秀线', '达标线(前50%)', '卷面及格线', '优秀率', '达标率(前50%)', '卷面及格率'],
                     ...state.subjectRows.map((row) => [row.subject, getSubjectMaxScore(row.subject), row.count, round(row.avg, 2), state.thresholds[row.subject]?.exc || 0, state.thresholds[row.subject]?.pass || 0, state.thresholds[row.subject]?.paperPass || 0, row.excRate, row.passRate, row.paperPassRate])
                 ]
+            },
+            {
+                name: '成绩分布',
+                rows: buildDistributionExportRows()
             },
             {
                 name: '成绩折算',
@@ -1471,15 +1933,15 @@
             {
                 name: '教师最终排名',
                 rows: [
-                    ['最终排名', '教师', '教师编号', '最终分', '覆盖学生', '任教学科/班级'],
-                    ...state.finalTeacherRows.map((row) => [row.rank, row.teacher, row.teacherId || '', round(row.overallScore, 2), row.totalStudents, row.subjectText])
+                    ['最终排名', '教师', '教师编号', '最终分', '覆盖学生', '风险提示', '任教学科/班级'],
+                    ...state.finalTeacherRows.map((row) => [row.rank, row.teacher, row.teacherId || '', round(row.overallScore, 2), row.totalStudents, (row.riskFlags || []).join('、'), row.subjectText])
                 ]
             },
             {
                 name: '教师学科明细',
                 rows: [
-                    ['学科排名', '教师', '教师编号', '学科', '是否进总榜', '班级', '人数', '均分', '优秀率', '达标率(前50%)', '卷面及格率', '低分率', '相对两率一分', '绝对达成分', '两率一分综合', '基础校正', '工作量修正', '置信系数', '质量分'],
-                    ...state.teacherRows.map((row) => [row.subjectRank, row.teacher, row.teacherId || '', row.subject, row.inFinalRank ? '是' : '否', row.classes.join('、'), row.studentCount, round(row.avg, 2), row.excRate, row.passRate, row.paperPassRate, row.lowRate, round(row.relativeLeagueScore, 2), round(row.absoluteScore, 2), round(row.leagueScore, 2), round(row.baselineAdjustment, 2), round(row.workloadAdjustment, 2), round(row.confidence, 3), round(row.fairScore, 2)])
+                    ['学科排名', '教师', '教师编号', '学科', '是否进总榜', '班级', '任课范围', '人数', '均分', '优秀率', '达标率(前50%)', '卷面及格率', '低分率', '相对两率一分', '绝对达成分', '两率一分综合', '基础校正', '工作量修正', '置信系数', '质量分', '风险提示'],
+                    ...state.teacherRows.map((row) => [row.subjectRank, row.teacher, row.teacherId || '', row.subject, row.inFinalRank ? '是' : '否', row.classes.join('、'), row.scopeText || '', row.studentCount, round(row.avg, 2), row.excRate, row.passRate, row.paperPassRate, row.lowRate, round(row.relativeLeagueScore, 2), round(row.absoluteScore, 2), round(row.leagueScore, 2), round(row.baselineAdjustment, 2), round(row.workloadAdjustment, 2), round(row.confidence, 3), round(row.fairScore, 2), (row.riskFlags || []).join('、')])
                 ]
             },
             {
@@ -1508,6 +1970,14 @@
                 name: '教师诊断',
                 rows: buildTeacherDiagnosticRows()
             }] : []),
+            {
+                name: '学生个人报告',
+                rows: getSelectedStudent() ? buildStudentReportRows(getSelectedStudent()) : [['提示'], ['未选择学生']]
+            },
+            {
+                name: '考试对比',
+                rows: buildExamComparisonRows()
+            },
             {
                 name: '算法口径',
                 rows: [
@@ -1555,6 +2025,27 @@
         ]);
     }
 
+    function exportStudentReportWorkbook() {
+        const student = getSelectedStudent();
+        if (!student) return toast('请选择学生后再导出个人报告。', 'warn');
+        writeWorkbook(`学生个人报告_${student.className}_${student.name}_${dateStamp()}.xlsx`, [
+            { name: '个人报告', rows: buildStudentReportRows(student) },
+            { name: '口径说明', rows: [['项目', '口径'], ['总分科目', getTotalSubjects().join('、')], ['满分配置', getMaxScoreSummary()], ['排名', '校排为当前所选学校内排名；班排为当前班级内排名；同分并列。']] }
+        ]);
+    }
+
+    function exportReportWorkbook() {
+        if (!getAnalysisStudents().length) return toast('暂无可导出的报告数据。', 'warn');
+        writeWorkbook(`校内成绩分析报告版_${currentConfig().label}_${dateStamp()}.xlsx`, [
+            { name: '报告摘要', rows: buildReportSummaryRows() },
+            { name: '班级诊断', rows: buildClassDiagnosisRows() },
+            { name: '成绩分布', rows: buildDistributionExportRows() },
+            { name: '教师解释', rows: buildTeacherExplanationExportRows() },
+            { name: '学生提醒', rows: buildStudentAlertExportRows() },
+            { name: '考试对比', rows: buildExamComparisonRows() }
+        ]);
+    }
+
     function buildStudentRankRows() {
         const header = ['班级', '姓名', '考号'];
         const subjects = getAnalysisSubjects();
@@ -1579,6 +2070,168 @@
                 return row;
             });
         return [header, ...rows];
+    }
+
+    function buildStudentReportRows(student) {
+        if (!student) return [['项目', '内容'], ['提示', '未选择学生']];
+        const header = ['学科', '分数', '校排', '班排', '距优秀线', '距达标线', '满分', '得分率', '判断'];
+        const rows = getAnalysisSubjects().map((subject) => {
+            const score = Number(student.scores?.[subject]);
+            const maxScore = getSubjectMaxScore(subject);
+            const thresholds = state.thresholds[subject] || {};
+            const rate = Number.isFinite(score) && maxScore > 0 ? round((score / maxScore) * 100, 1) : 0;
+            let label = '未参考';
+            if (Number.isFinite(score)) {
+                if (score >= Number(thresholds.exc || 0)) label = '优势';
+                else if (score < Number(thresholds.pass || 0)) label = '需提升';
+                else label = '稳定';
+            }
+            return [
+                subject,
+                formatExportScore(score),
+                student.ranks?.[subject]?.grade || '',
+                student.ranks?.[subject]?.class || '',
+                Number.isFinite(score) ? round(score - Number(thresholds.exc || 0), 1) : '',
+                Number.isFinite(score) ? round(score - Number(thresholds.pass || 0), 1) : '',
+                maxScore,
+                rate,
+                label
+            ];
+        });
+        return [
+            ['项目', '内容'],
+            ['学校', student.school || state.activeSchool || '本校'],
+            ['班级', student.className],
+            ['姓名', student.name],
+            ['考号', student.id || ''],
+            [currentConfig().totalLabel, formatExportScore(student.total)],
+            ['总分校排', student.ranks?.total?.grade || ''],
+            ['总分班排', student.ranks?.total?.class || ''],
+            [],
+            header,
+            ...rows
+        ];
+    }
+
+    function buildDistributionExportRows() {
+        return [
+            ['项目', '满分', '人数', '均分', '标准差', '最低', 'Q1', '中位数', 'Q3', '最高', '优秀段', '良好段', '及格段', '低分段'],
+            ...buildDistributionRows().map((row) => [row.label, row.maxScore, row.count, round(row.avg, 2), round(row.sd, 2), round(row.min, 2), round(row.q1, 2), round(row.median, 2), round(row.q3, 2), round(row.max, 2), row.bandExcellent, row.bandGood, row.bandPass, row.bandLow])
+        ];
+    }
+
+    function buildReportSummaryRows() {
+        const totalMetrics = metricSummary(getAnalysisStudents().map((student) => student.total), state.thresholds.total || {}, getTotalMaxScore());
+        const topClass = state.classRows[0];
+        const weakClass = state.classRows.slice().sort((a, b) => a.qualityScore - b.qualityScore)[0];
+        const weakSubject = state.subjectRows.slice().sort((a, b) => a.scoreRate - b.scoreRate)[0];
+        return [
+            ['项目', '内容'],
+            ['学校', state.activeSchool || '全部'],
+            ['年级', currentConfig().label],
+            ['学生数', getAnalysisStudents().length],
+            ['班级数', getClasses().length],
+            ['总分科目', getTotalSubjects().join('、')],
+            ['总分均分', round(totalMetrics.avg, 2)],
+            ['最高班级', topClass ? `${topClass.className} 综合分 ${topClass.qualityScore}` : ''],
+            ['关注班级', weakClass ? `${weakClass.className} 综合分 ${weakClass.qualityScore}` : ''],
+            ['关注学科', weakSubject ? `${weakSubject.subject} 得分率 ${(weakSubject.scoreRate * 100).toFixed(1)}%` : ''],
+            ['导入诊断', getImportDiagnosticSummary()]
+        ];
+    }
+
+    function buildClassDiagnosisRows() {
+        return [
+            ['班级', '综合排名', '人数', '总分有效', '总分均分', '综合分', '薄弱学科', '风险提示'],
+            ...state.classRows.map((row) => {
+                const weakSubjects = Object.entries(row.subjects)
+                    .map(([subject, metric]) => ({ subject, rate: getSubjectMaxScore(subject) ? metric.avg / getSubjectMaxScore(subject) : 0 }))
+                    .sort((a, b) => a.rate - b.rate)
+                    .slice(0, 3)
+                    .map((item) => item.subject)
+                    .join('、');
+                return [row.className, row.rank, row.studentCount, row.completeTotalCount, round(row.metrics.total.avg, 2), row.qualityScore, weakSubjects, (row.riskFlags || []).join('、')];
+            })
+        ];
+    }
+
+    function buildTeacherExplanationExportRows() {
+        const rows = [['教师', '教师编号', '最终排名', '最终分', '学科', '班级', '任课范围', '人数', '均分', '质量分', '科内相对分', '学科项分', '权重', '基础校正', '风险提示']];
+        state.finalTeacherRows.forEach((teacher) => {
+            teacher.subjects.forEach((item) => {
+                rows.push([teacher.teacher, teacher.teacherId || '', teacher.rank, round(teacher.overallScore, 2), item.subject, item.classes.join('、'), item.scopeText || '', item.studentCount, round(item.avg, 2), round(item.fairScore, 2), round(item.relativeScore, 2), round(item.finalUnitScore, 2), round(Math.max(item.studentCount, 1) * item.confidence, 2), round(item.baselineAdjustment, 2), (item.riskFlags || []).join('、')]);
+            });
+        });
+        return rows;
+    }
+
+    function buildStudentAlertExportRows() {
+        return [
+            ['类型', '班级', '姓名', '学科', '分数', '差距/名次'],
+            ...state.studentAlerts.map((item) => [item.type, item.student.className, item.student.name, item.subject, round(item.score, 2), item.gap])
+        ];
+    }
+
+    function buildExamComparisonRows() {
+        const baseline = (state.examHistory || []).find((item) => item.id === state.selectedHistoryId);
+        const rows = [['类型', '对象', '本次', '基准', '变化', '说明']];
+        if (!baseline || !getAnalysisStudents().length) return rows;
+        const baseClassMap = new Map((baseline.classes || []).map((item) => [item.className, item]));
+        state.classRows.forEach((row) => {
+            const base = baseClassMap.get(row.className);
+            if (!base) return;
+            rows.push(['班级总分均分', row.className, round(row.metrics.total.avg, 2), round(base.totalAvg, 2), signed(row.metrics.total.avg - base.totalAvg), '正数表示本次高于基准']);
+            rows.push(['班级综合分', row.className, round(row.qualityScore, 2), round(base.qualityScore, 2), signed(row.qualityScore - base.qualityScore), '正数表示综合表现提升']);
+        });
+        const baseStudentMap = new Map((baseline.students || []).map((item) => [item.key, item]));
+        getAnalysisStudents().forEach((student) => {
+            const base = baseStudentMap.get(studentKey(student));
+            if (!base) return;
+            const totalNow = Number.isFinite(Number(student.total)) ? Number(student.total) : null;
+            const totalChange = totalNow !== null && Number.isFinite(Number(base.total)) ? totalNow - Number(base.total) : null;
+            const rankChange = Number.isFinite(Number(student.ranks?.total?.grade)) && Number.isFinite(Number(base.gradeRank))
+                ? Number(base.gradeRank) - Number(student.ranks.total.grade)
+                : null;
+            rows.push(['学生总分', `${student.className} ${student.name}`, totalNow === null ? '' : round(totalNow, 2), base.total ?? '', totalChange === null ? '' : signed(totalChange), '正数表示总分提升']);
+            rows.push(['学生校排', `${student.className} ${student.name}`, student.ranks?.total?.grade || '', base.gradeRank || '', rankChange === null ? '' : signed(rankChange), '正数表示名次前进']);
+        });
+        return rows;
+    }
+
+    function buildDistributionRows() {
+        const items = [
+            { key: 'total', label: currentConfig().totalLabel, maxScore: getTotalMaxScore() },
+            ...getAnalysisSubjects().map((subject) => ({ key: subject, label: subject, maxScore: getSubjectMaxScore(subject) }))
+        ];
+        return items.map((item) => {
+            const values = getAnalysisStudents()
+                .map((student) => item.key === 'total' ? student.total : student.scores?.[item.key])
+                .map(Number)
+                .filter(Number.isFinite)
+                .sort((a, b) => a - b);
+            const count = values.length;
+            const maxScore = Number(item.maxScore || 0);
+            const band = (minRate, maxRate = Infinity) => {
+                if (!count || !maxScore) return 0;
+                return values.filter((value) => value >= maxScore * minRate && value < maxScore * maxRate).length / count;
+            };
+            return {
+                label: item.label,
+                maxScore,
+                count,
+                avg: count ? average(values) : 0,
+                sd: standardDeviation(values),
+                min: count ? values[0] : 0,
+                q1: percentile(values, 0.25),
+                median: percentile(values, 0.5),
+                q3: percentile(values, 0.75),
+                max: count ? values[count - 1] : 0,
+                bandExcellent: band(0.85),
+                bandGood: band(0.75, 0.85),
+                bandPass: band(0.6, 0.75),
+                bandLow: maxScore && count ? values.filter((value) => value < maxScore * 0.6).length / count : 0
+            };
+        }).filter((row) => row.count);
     }
 
     function buildImportDiagnosticRows() {
@@ -1630,7 +2283,7 @@
         ws['!autofilter'] = { ref: XLSX.utils.encode_range({ s: { r: 0, c: 0 }, e: { r: Math.max(rows.length - 1, 0), c: Math.max(header.length - 1, 0) } }) };
         header.forEach((title, columnIndex) => {
             const text = cleanText(title);
-            if (!/(率|系数)$|率\(|优秀率|达标率|低分率|及格率/.test(text)) return;
+            if (!/(率|系数)$|率\(|优秀率|达标率|低分率|及格率|优秀段|良好段|及格段|低分段/.test(text)) return;
             for (let rowIndex = 1; rowIndex < rows.length; rowIndex += 1) {
                 const cell = ws[XLSX.utils.encode_cell({ r: rowIndex, c: columnIndex })];
                 if (cell && typeof cell.v === 'number' && cell.v >= 0 && cell.v <= 1) cell.z = '0.0%';
@@ -1638,8 +2291,20 @@
         });
     }
 
-    function saveLocal() {
-        localStorage.setItem(LOCAL_KEY, JSON.stringify({
+    async function saveLocal() {
+        const snapshot = buildLocalSnapshot();
+        try {
+            await putLocalData(LOCAL_DB_KEY, snapshot);
+            localStorage.setItem(LOCAL_KEY, JSON.stringify({ storedInIndexedDB: true, savedAt: new Date().toISOString() }));
+            toast('已保存到本机浏览器数据库。', 'ok');
+        } catch (error) {
+            localStorage.setItem(LOCAL_KEY, JSON.stringify(snapshot));
+            toast('IndexedDB 不可用，已用浏览器备用存储保存。', 'ok');
+        }
+    }
+
+    function buildLocalSnapshot() {
+        return {
             grade: state.grade,
             activeSchool: state.activeSchool,
             students: state.students,
@@ -1649,44 +2314,151 @@
             teacherRankSubjectsCustom: state.teacherRankSubjectsCustom,
             blankScoreMode: state.blankScoreMode,
             sourceMaxOverrides: state.sourceMaxOverrides,
+            examSchemes: state.examSchemes,
+            scoreColumnOverrides: state.scoreColumnOverrides,
             subjectSourceHints: state.subjectSourceHints,
             importStats: state.importStats,
+            examHistory: state.examHistory,
+            selectedHistoryId: state.selectedHistoryId,
             logs: state.logs
-        }));
-        toast('已保存到本机浏览器。', 'ok');
+        };
     }
 
-    function restoreLocal() {
-        const raw = localStorage.getItem(LOCAL_KEY);
-        if (!raw) return toast('没有找到本地保存。', 'warn');
+    async function restoreLocal() {
         try {
-            const data = JSON.parse(raw);
-            state.grade = Number(data.grade || 9);
-            state.activeSchool = cleanText(data.activeSchool || '');
-            state.students = Array.isArray(data.students) ? data.students : [];
-            state.subjects = sortSubjects(Array.isArray(data.subjects) ? data.subjects : []);
-            state.teachers = Array.isArray(data.teachers) ? data.teachers : [];
-            state.teacherRankSubjects = sortSubjects(Array.isArray(data.teacherRankSubjects) ? data.teacherRankSubjects : []);
-            state.teacherRankSubjectsCustom = Boolean(data.teacherRankSubjectsCustom || state.teacherRankSubjects.length);
-            state.blankScoreMode = ['zero', 'exclude', 'absent'].includes(data.blankScoreMode) ? data.blankScoreMode : 'zero';
-            state.sourceMaxOverrides = data.sourceMaxOverrides && typeof data.sourceMaxOverrides === 'object' ? data.sourceMaxOverrides : {};
-            state.subjectSourceHints = data.subjectSourceHints && typeof data.subjectSourceHints === 'object' ? data.subjectSourceHints : {};
-            state.importStats = data.importStats && typeof data.importStats === 'object' ? {
-                duplicateStudents: Number(data.importStats.duplicateStudents || 0),
-                duplicateConflicts: Array.isArray(data.importStats.duplicateConflicts) ? data.importStats.duplicateConflicts : []
-            } : { duplicateStudents: 0, duplicateConflicts: [] };
-            state.logs = Array.isArray(data.logs) ? data.logs : [];
-            ensureActiveSchool();
-            document.querySelectorAll('#grade-segment button').forEach((button) => {
-                button.classList.toggle('active', Number(button.dataset.grade) === state.grade);
-            });
-            analyze();
-            log('已恢复本地保存数据。');
-            renderAll();
+            let data = await getLocalData(LOCAL_DB_KEY);
+            if (!data) {
+                const raw = localStorage.getItem(LOCAL_KEY);
+                if (!raw) return toast('没有找到本地保存。', 'warn');
+                const parsed = JSON.parse(raw);
+                data = parsed.storedInIndexedDB ? null : parsed;
+            }
+            if (!data) return toast('没有找到可恢复的数据。', 'warn');
+            applyLocalSnapshot(data);
             toast('本地数据已恢复。', 'ok');
         } catch (error) {
             toast(`恢复失败：${error.message}`, 'warn');
         }
+    }
+
+    function applyLocalSnapshot(data) {
+        state.grade = Number(data.grade || 9);
+        state.activeSchool = cleanText(data.activeSchool || '');
+        state.students = Array.isArray(data.students) ? data.students : [];
+        state.subjects = sortSubjects(Array.isArray(data.subjects) ? data.subjects : []);
+        state.teachers = Array.isArray(data.teachers) ? data.teachers : [];
+        state.teacherRankSubjects = sortSubjects(Array.isArray(data.teacherRankSubjects) ? data.teacherRankSubjects : []);
+        state.teacherRankSubjectsCustom = Boolean(data.teacherRankSubjectsCustom || state.teacherRankSubjects.length);
+        state.blankScoreMode = ['zero', 'exclude', 'absent'].includes(data.blankScoreMode) ? data.blankScoreMode : 'zero';
+        state.sourceMaxOverrides = data.sourceMaxOverrides && typeof data.sourceMaxOverrides === 'object' ? data.sourceMaxOverrides : {};
+        state.examSchemes = data.examSchemes && typeof data.examSchemes === 'object' ? data.examSchemes : {};
+        state.scoreColumnOverrides = data.scoreColumnOverrides && typeof data.scoreColumnOverrides === 'object' ? data.scoreColumnOverrides : {};
+        state.subjectSourceHints = data.subjectSourceHints && typeof data.subjectSourceHints === 'object' ? data.subjectSourceHints : {};
+        state.importStats = data.importStats && typeof data.importStats === 'object' ? {
+            duplicateStudents: Number(data.importStats.duplicateStudents || 0),
+            duplicateConflicts: Array.isArray(data.importStats.duplicateConflicts) ? data.importStats.duplicateConflicts : []
+        } : { duplicateStudents: 0, duplicateConflicts: [] };
+        state.examHistory = Array.isArray(data.examHistory) ? data.examHistory : [];
+        state.selectedHistoryId = cleanText(data.selectedHistoryId || '');
+        state.logs = Array.isArray(data.logs) ? data.logs : [];
+        ensureActiveSchool();
+        document.querySelectorAll('#grade-segment button').forEach((button) => {
+            button.classList.toggle('active', Number(button.dataset.grade) === state.grade);
+        });
+        analyze();
+        log('已恢复本地保存数据。');
+        renderAll();
+    }
+
+    function openLocalDb() {
+        return new Promise((resolve, reject) => {
+            if (!window.indexedDB) {
+                reject(new Error('当前浏览器不支持 IndexedDB'));
+                return;
+            }
+            const request = indexedDB.open(LOCAL_DB_NAME, 1);
+            request.onupgradeneeded = () => {
+                request.result.createObjectStore(LOCAL_DB_STORE);
+            };
+            request.onsuccess = () => resolve(request.result);
+            request.onerror = () => reject(request.error || new Error('IndexedDB 打开失败'));
+        });
+    }
+
+    async function putLocalData(key, value) {
+        const db = await openLocalDb();
+        return new Promise((resolve, reject) => {
+            const tx = db.transaction(LOCAL_DB_STORE, 'readwrite');
+            tx.objectStore(LOCAL_DB_STORE).put(value, key);
+            tx.oncomplete = () => {
+                db.close();
+                resolve();
+            };
+            tx.onerror = () => {
+                db.close();
+                reject(tx.error || new Error('IndexedDB 写入失败'));
+            };
+        });
+    }
+
+    async function getLocalData(key) {
+        const db = await openLocalDb();
+        return new Promise((resolve, reject) => {
+            const tx = db.transaction(LOCAL_DB_STORE, 'readonly');
+            const request = tx.objectStore(LOCAL_DB_STORE).get(key);
+            request.onsuccess = () => {
+                db.close();
+                resolve(request.result || null);
+            };
+            request.onerror = () => {
+                db.close();
+                reject(request.error || new Error('IndexedDB 读取失败'));
+            };
+        });
+    }
+
+    async function saveCurrentExamToHistory() {
+        if (!getAnalysisStudents().length) return toast('暂无可保存的考试数据。', 'warn');
+        const name = cleanText(els.historyName?.value) || `${currentConfig().label}_${dateStamp()}`;
+        const snapshot = buildExamSnapshot(name);
+        state.examHistory = [snapshot, ...state.examHistory.filter((item) => item.id !== snapshot.id)].slice(0, HISTORY_LIMIT);
+        state.selectedHistoryId = snapshot.id;
+        renderExamComparison();
+        try {
+            await saveLocal();
+        } catch (error) {
+            toast('考试历史已保存在当前页面，自动持久化失败。', 'warn');
+        }
+        log(`已保存考试历史：${name}。`);
+    }
+
+    function buildExamSnapshot(name) {
+        const createdAt = new Date().toISOString();
+        return {
+            id: `${Date.now()}_${Math.random().toString(16).slice(2)}`,
+            name,
+            createdAt,
+            grade: state.grade,
+            school: state.activeSchool || '全部',
+            totalMax: getTotalMaxScore(),
+            totalSubjects: getTotalSubjects(),
+            classes: state.classRows.map((row) => ({
+                className: row.className,
+                totalAvg: row.metrics.total.avg,
+                qualityScore: row.qualityScore,
+                studentCount: row.studentCount,
+                completeTotalCount: row.completeTotalCount
+            })),
+            students: getAnalysisStudents().map((student) => ({
+                key: studentKey(student),
+                className: student.className,
+                name: student.name,
+                id: student.id,
+                total: Number.isFinite(Number(student.total)) ? Number(student.total) : null,
+                gradeRank: student.ranks?.total?.grade || null,
+                classRank: student.ranks?.total?.class || null
+            }))
+        };
     }
 
     function clearData() {
@@ -1694,6 +2466,9 @@
         state.activeSchool = '';
         state.subjects = [];
         state.thresholds = {};
+        state.scoreImportSources = [];
+        state.scoreColumnOverrides = {};
+        state.scoreMappingRows = [];
         state.teacherRankSubjects = [];
         state.teacherRankSubjectsCustom = false;
         state.teacherDiagnostics = { sameName: [], rankedSubjects: [], excludedSubjects: [], teacherCount: 0 };
@@ -1708,6 +2483,9 @@
         state.studentAlerts = [];
         state.scoreAdjustments = {};
         state.teacherCoverage = { matched: 0, unmatched: [] };
+        state.selectedClassName = '';
+        state.selectedStudentKey = '';
+        state.selectedTeacherKey = '';
         log('已清空当前数据。');
         renderAll();
     }
@@ -1724,6 +2502,10 @@
         state.students = [];
         state.teacherRankSubjects = [];
         state.teacherRankSubjectsCustom = false;
+        state.scoreMappingRows = [];
+        state.selectedClassName = '';
+        state.selectedStudentKey = '';
+        state.selectedTeacherKey = '';
         let id = sampleGrade * 1000 + 1;
         classes.forEach((className, classIndex) => {
             for (let i = 0; i < 18; i += 1) {
@@ -1850,15 +2632,34 @@
     }
 
     function getConfiguredTotalSubjects() {
-        const config = currentConfig();
-        if (state.grade === 9) return CORE_GRADE9.slice();
+        const override = state.examSchemes?.[state.grade]?.totalSubjects;
+        if (Array.isArray(override)) return sortSubjects(override.filter((subject) => getSubjectMaxScore(subject) > 0));
+        return getDefaultTotalSubjectsForGrade(state.grade);
+    }
+
+    function getDefaultTotalSubjectsForGrade(grade = state.grade) {
+        const config = GRADE_CONFIG[grade] || GRADE_CONFIG[9];
+        if (Number(grade) === 9) return CORE_GRADE9.slice();
         return (config.templateSubjects || [])
             .filter((subject) => Object.prototype.hasOwnProperty.call(config.maxScores || {}, subject));
     }
 
     function getSubjectMaxScore(subject) {
-        const config = currentConfig();
+        const override = Number(state.examSchemes?.[state.grade]?.maxScores?.[subject]);
+        if (Number.isFinite(override) && override > 0) return override;
+        return getDefaultSubjectMaxScore(subject, state.grade);
+    }
+
+    function getDefaultSubjectMaxScore(subject, grade = state.grade) {
+        const config = GRADE_CONFIG[grade] || GRADE_CONFIG[9];
         return Number(config.maxScores?.[subject] || 100);
+    }
+
+    function ensureExamSchemeOverride() {
+        const key = String(state.grade);
+        if (!state.examSchemes[key]) state.examSchemes[key] = { maxScores: {}, totalSubjects: null };
+        if (!state.examSchemes[key].maxScores) state.examSchemes[key].maxScores = {};
+        return state.examSchemes[key];
     }
 
     function getTotalMaxScore() {
@@ -1901,7 +2702,13 @@
 
     function getRuleSubjects() {
         const config = currentConfig();
-        return sortSubjects([...new Set([...(config.templateSubjects || []), ...getAnalysisSubjects()])]);
+        const scheme = state.examSchemes?.[state.grade] || {};
+        return sortSubjects([...new Set([
+            ...(config.templateSubjects || []),
+            ...getAnalysisSubjects(),
+            ...Object.keys(scheme.maxScores || {}),
+            ...(scheme.totalSubjects || [])
+        ])]);
     }
 
     function sourceMaxOverrideKey(subject) {
@@ -2201,6 +3008,19 @@
         return student.ranks[key];
     }
 
+    function studentKey(student) {
+        return `${cleanText(student.school || state.activeSchool)}__${cleanText(student.className)}__${cleanText(student.id) || cleanName(student.name)}`;
+    }
+
+    function getSelectedStudent() {
+        const students = getAnalysisStudents();
+        if (!students.length) return null;
+        if (!state.selectedStudentKey || !students.some((student) => studentKey(student) === state.selectedStudentKey)) {
+            state.selectedStudentKey = studentKey(students.slice().sort((a, b) => (a.ranks?.total?.grade || 99999) - (b.ranks?.total?.grade || 99999))[0]);
+        }
+        return students.find((student) => studentKey(student) === state.selectedStudentKey) || null;
+    }
+
     function groupBy(list, getter) {
         const map = new Map();
         list.forEach((item) => {
@@ -2225,9 +3045,12 @@
             ...item,
             teacher: normalizeTeacherName(item.teacher),
             teacherId: cleanText(item.teacherId),
-            teacherKey: cleanText(item.teacherKey) || (item.teacherId ? `${normalizeTeacherName(item.teacher)}#${cleanText(item.teacherId)}` : normalizeTeacherName(item.teacher))
+            teacherKey: cleanText(item.teacherKey) || (item.teacherId ? `${normalizeTeacherName(item.teacher)}#${cleanText(item.teacherId)}` : normalizeTeacherName(item.teacher)),
+            scopeText: cleanText(item.scopeText),
+            studentIds: Array.isArray(item.studentIds) ? item.studentIds.map(cleanText).filter(Boolean) : [],
+            studentNames: Array.isArray(item.studentNames) ? item.studentNames.map(cleanName).filter(Boolean) : []
         }));
-        return uniqueBy(normalized, (item) => `${item.className}__${item.subject}__${item.teacherKey}`)
+        return uniqueBy(normalized, (item) => `${item.className}__${item.subject}__${item.teacherKey}__${teacherScopeKey(item)}`)
             .sort((a, b) => {
                 const classOrder = naturalCompare(a.className, b.className);
                 if (classOrder) return classOrder;
@@ -2235,6 +3058,10 @@
                 if (a.subject !== b.subject) return subjectOrder[0] === a.subject ? -1 : 1;
                 return naturalCompare(a.teacherKey, b.teacherKey);
             });
+    }
+
+    function teacherScopeKey(item) {
+        return `${cleanText(item.scopeText)}|${(item.studentIds || []).join(',')}|${(item.studentNames || []).join(',')}`;
     }
 
     function getClasses() {
@@ -2253,6 +3080,16 @@
 
     function sumObjectValues(object) {
         return Object.values(object || {}).reduce((sum, value) => sum + Number(value || 0), 0);
+    }
+
+    function percentile(values, ratio) {
+        const list = values.map(Number).filter(Number.isFinite).sort((a, b) => a - b);
+        if (!list.length) return 0;
+        const index = (list.length - 1) * ratio;
+        const lower = Math.floor(index);
+        const upper = Math.ceil(index);
+        if (lower === upper) return list[lower];
+        return list[lower] + (list[upper] - list[lower]) * (index - lower);
     }
 
     function median(values) {
@@ -2321,6 +3158,10 @@
         return `<div class="insight-card"><strong>${escapeHtml(title)}</strong><span>${escapeHtml(body)}</span></div>`;
     }
 
+    function detailItem(label, value) {
+        return `<div class="detail-item"><span>${escapeHtml(label)}</span><strong>${escapeHtml(value)}</strong></div>`;
+    }
+
     function rankBadge(rank) {
         const value = String(rank || '-');
         const num = Number(rank);
@@ -2328,8 +3169,8 @@
         return `<span class="rank-badge ${tone}">${escapeHtml(value)}</span>`;
     }
 
-    function emptyRow(count) {
-        return `<tr><td colspan="${count}" class="empty">暂无数据</td></tr>`;
+    function emptyRow(count, message = '暂无数据') {
+        return `<tr><td colspan="${count}" class="empty">${escapeHtml(message)}</td></tr>`;
     }
 
     function percent(value) {
@@ -2355,6 +3196,11 @@
     function signed(value) {
         const num = Number(value || 0);
         return `${num >= 0 ? '+' : ''}${num.toFixed(1)}`;
+    }
+
+    function riskText(flags) {
+        const list = (flags || []).filter(Boolean);
+        return list.length ? `<span class="risk-text">${escapeHtml(list.join('、'))}</span>` : '<span class="ok-text">正常</span>';
     }
 
     function round(value, digits = 2) {
@@ -2426,8 +3272,18 @@
         fillMergedRows,
         parseTeacherRows,
         parseScoreRows,
+        parseScoreSources,
+        buildScoreImportSource,
+        scoreColumnOverrideKey,
         buildSubjectColumns,
         buildStudentRankRows,
+        buildStudentReportRows,
+        buildDistributionRows,
+        buildExamSnapshot,
+        buildExamComparisonRows,
+        exportReportWorkbook,
+        exportStudentReportWorkbook,
+        saveCurrentExamToHistory,
         achievementScore,
         formatExportScore,
         exportWorkbook

@@ -450,6 +450,7 @@ tbody tr:hover {
 
 select,
 input[type="search"],
+input[type="text"],
 input[type="number"] {
     min-height: 38px;
     border: 1px solid var(--line);
@@ -471,6 +472,63 @@ input[type="number"] {
 
 .score-rule-input {
     width: 90px;
+}
+
+.small-input {
+    width: 120px;
+}
+
+.mapping-select {
+    min-width: 220px;
+}
+
+.detail-card {
+    border: 1px solid var(--line);
+    border-radius: 8px;
+    background: #fbfdff;
+    padding: 14px;
+    min-height: 84px;
+}
+
+.detail-grid {
+    display: grid;
+    grid-template-columns: repeat(4, minmax(0, 1fr));
+    gap: 10px;
+    margin-bottom: 12px;
+}
+
+.detail-item {
+    border: 1px solid #e5edf6;
+    border-radius: 8px;
+    background: #fff;
+    padding: 10px;
+    display: grid;
+    gap: 4px;
+}
+
+.detail-item span {
+    color: var(--muted);
+    font-size: 12px;
+}
+
+.detail-item strong {
+    font-size: 18px;
+}
+
+.mini-table {
+    width: 100%;
+    min-width: 0;
+    margin-top: 10px;
+}
+
+.risk-text {
+    color: var(--warn);
+    font-weight: 800;
+}
+
+.ok-text {
+    color: var(--ok);
+    font-weight: 800;
 }
 
 .check-chip-row {
@@ -563,6 +621,7 @@ input[type="number"] {
     .analysis-layout,
     .import-grid,
     .metric-grid,
+    .detail-grid,
     .insight-grid,
     .method-grid,
     .pair-list {

@@ -4,7 +4,7 @@
     <meta charset="utf-8">
     <meta name="viewport" content="width=device-width, initial-scale=1">
     <title>校内成绩分析系统</title>
-    <link rel="stylesheet" href="assets/css/app.css?v=20260503-teacher-diagnostics">
+    <link rel="stylesheet" href="assets/css/app.css?v=20260503-full-optimization">
     <script src="assets/vendor/xlsx/xlsx.full.min.js"></script>
     <script src="assets/vendor/chart.js/chart.umd.min.js"></script>
 </head>
@@ -140,6 +140,21 @@
                 <section class="panel">
                     <div class="panel-head">
                         <div>
+                            <h2>成绩列映射预览</h2>
+                            <p>确认系统识别到的学科列；多列成绩可手动指定最终采用列。</p>
+                        </div>
+                    </div>
+                    <div class="table-wrap">
+                        <table id="score-mapping-table">
+                            <thead></thead>
+                            <tbody></tbody>
+                        </table>
+                    </div>
+                </section>
+
+                <section class="panel">
+                    <div class="panel-head">
+                        <div>
                             <h2>计算口径</h2>
                             <p>确认原始满分、空白成绩和总分纳入学科。</p>
                         </div>
@@ -151,6 +166,7 @@
                                 <option value="absent">空白剔除，缺考按 0 分</option>
                             </select>
                         </label>
+                        <button class="ghost-button" id="reset-exam-scheme-btn">恢复默认口径</button>
                     </div>
                     <div class="table-wrap">
                         <table id="score-rule-table">
@@ -195,12 +211,38 @@
                 <section class="panel">
                     <div class="panel-head">
                         <div>
+                            <h2>班级下钻</h2>
+                            <p>查看单个班级的学科短板、分布和重点学生。</p>
+                        </div>
+                        <select id="class-drilldown-select"></select>
+                    </div>
+                    <div id="class-drilldown-panel" class="detail-card"></div>
+                </section>
+
+                <section class="panel">
+                    <div class="panel-head">
+                        <div>
                             <h2>学科班级矩阵</h2>
                             <p>用于定位班级和学科短板。</p>
                         </div>
                     </div>
                     <div class="table-wrap">
                         <table id="subject-matrix-table">
+                            <thead></thead>
+                            <tbody></tbody>
+                        </table>
+                    </div>
+                </section>
+
+                <section class="panel">
+                    <div class="panel-head">
+                        <div>
+                            <h2>成绩分布</h2>
+                            <p>用中位数、四分位、标准差和分数段判断稳定性与分化程度。</p>
+                        </div>
+                    </div>
+                    <div class="table-wrap">
+                        <table id="distribution-table">
                             <thead></thead>
                             <tbody></tbody>
                         </table>
@@ -253,6 +295,17 @@
                 <section class="panel">
                     <div class="panel-head">
                         <div>
+                            <h2>教师排名解释</h2>
+                            <p>拆开查看最终分由哪些学科项、权重和校正项组成。</p>
+                        </div>
+                        <select id="teacher-explain-select"></select>
+                    </div>
+                    <div id="teacher-explain-panel" class="detail-card"></div>
+                </section>
+
+                <section class="panel">
+                    <div class="panel-head">
+                        <div>
                             <h2>教师排名方法</h2>
                             <p>本地单校版采用无历史成绩时更稳的基础校正法。</p>
                         </div>
@@ -279,6 +332,17 @@
                             <span>每位教师先得到学科内质量分，再用学科内百分位作辅助，按任教学生数加权汇总。</span>
                         </div>
                     </div>
+                </section>
+
+                <section class="panel">
+                    <div class="panel-head">
+                        <div>
+                            <h2>学生个人报告</h2>
+                            <p>点击学生表里的“报告”查看优势科、短板科和临界差距。</p>
+                        </div>
+                        <button class="ghost-button" id="export-student-report-btn">导出个人报告</button>
+                    </div>
+                    <div id="student-report-card" class="detail-card"></div>
                 </section>
 
                 <section class="panel">
@@ -331,7 +395,25 @@
                         <h2>导出分析工作簿</h2>
                         <p>包含班级总览、学科矩阵、教师排名、学生明细和算法口径。</p>
                     </div>
-                    <button class="primary-button" id="export-workbook-btn">导出 Excel</button>
+                    <div class="button-row">
+                        <button class="primary-button" id="export-workbook-btn">导出 Excel</button>
+                        <button class="ghost-button" id="export-report-btn">导出报告版</button>
+                    </div>
+                </section>
+
+                <section class="panel">
+                    <div class="panel-head">
+                        <div>
+                            <h2>多次考试对比</h2>
+                            <p>把当前考试保存为历史基准，再与后续考试做班级和学生进退步对比。</p>
+                        </div>
+                        <div class="filter-row">
+                            <input id="history-name" type="text" placeholder="考试名称">
+                            <button class="ghost-button" id="save-history-btn">保存当前考试</button>
+                            <select id="history-select"></select>
+                        </div>
+                    </div>
+                    <div id="comparison-panel" class="detail-card"></div>
                 </section>
             </section>
         </main>
@@ -339,6 +421,6 @@
 
     <div class="toast-region" id="toast-region" aria-live="polite"></div>
 
-    <script src="assets/js/app.js?v=20260503-teacher-diagnostics"></script>
+    <script src="assets/js/app.js?v=20260503-full-optimization"></script>
 </body>
 </html>
