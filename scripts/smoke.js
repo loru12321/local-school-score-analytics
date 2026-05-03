@@ -69,6 +69,29 @@ const { chromium } = require(playwrightPath);
   const download = await downloadPromise;
   const suggestedName = download.suggestedFilename();
 
+  const grade9Normalization = await page.evaluate(() => {
+    const api = window.LocalSchoolAnalytics;
+    const state = api.state;
+    const fullRaw = { 语文: 150, 数学: 150, 英语: 150, 物理: 100, 化学: 100 };
+    const midRaw = { 语文: 120, 数学: 110, 英语: 105, 物理: 80, 化学: 70 };
+    state.grade = 9;
+    state.activeSchool = '折算校';
+    state.subjects = ['语文', '数学', '英语', '物理', '化学'];
+    state.students = [
+      { school: '折算校', className: '9.1', name: '满分生', id: 'Z001', rawScores: fullRaw, scores: { ...fullRaw }, total: 0, ranks: {} },
+      { school: '折算校', className: '9.1', name: '折算生', id: 'Z002', rawScores: midRaw, scores: { ...midRaw }, total: 0, ranks: {} }
+    ];
+    state.teachers = [];
+    api.analyze();
+    return {
+      totalMax: api.getTotalMaxScore(),
+      firstTotal: state.students[0].total,
+      secondScores: state.students[1].scores,
+      adjustments: state.scoreAdjustments,
+      summary: api.getScoreAdjustmentSummary()
+    };
+  });
+
   await page.setViewportSize({ width: 390, height: 844 });
   await page.waitForTimeout(250);
   const mobile = await page.evaluate(() => ({
@@ -141,6 +164,18 @@ const { chromium } = require(playwrightPath);
     || grade9Config.totalMax !== 600) {
     throw new Error(`Grade 9 full-score config failed: ${JSON.stringify(grade9Config)}`);
   }
+  if (grade9Normalization.totalMax !== 600
+    || grade9Normalization.firstTotal !== 600
+    || grade9Normalization.secondScores.物理 !== 72
+    || grade9Normalization.secondScores.化学 !== 42
+    || grade9Normalization.adjustments.物理.sourceMax !== 100
+    || grade9Normalization.adjustments.物理.scale !== 0.9
+    || grade9Normalization.adjustments.化学.sourceMax !== 100
+    || grade9Normalization.adjustments.化学.scale !== 0.6
+    || !grade9Normalization.summary.includes('物理100→90')
+    || !grade9Normalization.summary.includes('化学100→60')) {
+    throw new Error(`Grade 9 score normalization failed: ${JSON.stringify(grade9Normalization)}`);
+  }
   if (grade8Config.normalizedClasses.join('|') !== '6.10|6.10|6.10|8.10|6.10') {
     throw new Error(`Class normalization failed: ${JSON.stringify(grade8Config.normalizedClasses)}`);
   }
@@ -172,5 +207,5 @@ const { chromium } = require(playwrightPath);
     throw new Error(`Student rank export should only include active-school subjects: ${JSON.stringify(edgeCases.rankHeader)}`);
   }
 
-  console.log(JSON.stringify({ ok: true, desktop, mobile, edgeCases }, null, 2));
+  console.log(JSON.stringify({ ok: true, desktop, mobile, edgeCases, grade9Normalization }, null, 2));
 })();
