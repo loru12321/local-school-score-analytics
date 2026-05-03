@@ -199,12 +199,92 @@ const { chromium } = require(playwrightPath);
     return {
       studentCount: state.students.length,
       duplicateStudents: state.importStats.duplicateStudents,
+      duplicateConflicts: state.importStats.duplicateConflicts,
       subjects: api.getAnalysisSubjects(),
       totalSubjects: api.getTotalSubjects(),
       totalMax: api.getTotalMaxScore(),
       total: state.students[0].total,
       chinese: state.students[0].scores.语文,
       hasSportsScore: Number.isFinite(Number(state.students[0].scores.体育))
+    };
+  });
+
+  const advancedImportRules = await page.evaluate(() => {
+    const api = window.LocalSchoolAnalytics;
+    const state = api.state;
+
+    state.grade = 9;
+    state.activeSchool = '折合校';
+    state.students = [];
+    state.subjects = [];
+    state.teachers = [];
+    state.subjectSourceHints = {};
+    state.importStats = { duplicateStudents: 0, duplicateConflicts: [] };
+    state.blankScoreMode = 'zero';
+    state.sourceMaxOverrides = {};
+    api.parseScoreRows([
+      ['学校', '班级', '姓名', '考号', '语文一卷', '语文二卷', '语文总', '数学', '英语', '物理折合', '化学折合'],
+      ['折合校', '9.1', '折合生', 'C001', 45, 35, '', 100, 100, 88, 55]
+    ], '成绩');
+    api.mergeDuplicateStudents();
+    api.analyze();
+    const converted = {
+      chinese: state.students[0].scores.语文,
+      physics: state.students[0].scores.物理,
+      chemistry: state.students[0].scores.化学,
+      total: state.students[0].total,
+      physicsAdjustment: state.scoreAdjustments.物理,
+      chemistryAdjustment: state.scoreAdjustments.化学
+    };
+
+    state.grade = 9;
+    state.activeSchool = '空白校';
+    state.students = [];
+    state.subjects = [];
+    state.teachers = [];
+    state.subjectSourceHints = {};
+    state.importStats = { duplicateStudents: 0, duplicateConflicts: [] };
+    api.parseScoreRows([
+      ['学校', '班级', '姓名', '考号', '语文'],
+      ['空白校', '9.1', '空白生', 'B001', ''],
+      ['空白校', '9.1', '缺考生', 'B002', '缺考'],
+      ['空白校', '9.1', '参考生', 'B003', 90]
+    ], '成绩');
+    api.mergeDuplicateStudents();
+    state.blankScoreMode = 'zero';
+    api.analyze();
+    const zeroRow = state.classRows.find((row) => row.className === '9.1').subjects.语文;
+    state.blankScoreMode = 'absent';
+    api.analyze();
+    const absentRow = state.classRows.find((row) => row.className === '9.1').subjects.语文;
+    state.blankScoreMode = 'exclude';
+    api.analyze();
+    const excludeRow = state.classRows.find((row) => row.className === '9.1').subjects.语文;
+
+    state.grade = 9;
+    state.activeSchool = '混合校';
+    state.subjects = ['语文'];
+    state.students = [
+      { school: '混合校', className: '9.1', name: '九年级', id: 'G001', rawScores: { 语文: 90 }, scores: {}, total: 0, ranks: {} },
+      { school: '混合校', className: '8.1', name: '八年级', id: 'G002', rawScores: { 语文: 80 }, scores: {}, total: 0, ranks: {} },
+      { school: '混合校', className: '未分班', name: '未知', id: 'G003', rawScores: { 语文: 70 }, scores: {}, total: 0, ranks: {} }
+    ];
+    state.teachers = [];
+    state.blankScoreMode = 'zero';
+    api.analyze();
+    const gradeScope = {
+      students: api.getAnalysisStudents().map((student) => student.name),
+      stats: api.getGradeScopeStats()
+    };
+
+    return {
+      converted,
+      blankModes: {
+        zero: { count: zeroRow.count, avg: zeroRow.avg },
+        absent: { count: absentRow.count, avg: absentRow.avg },
+        exclude: { count: excludeRow.count, avg: excludeRow.avg }
+      },
+      gradeScope
     };
   });
 
@@ -385,6 +465,9 @@ const { chromium } = require(playwrightPath);
   }
   if (duplicateAndWhitelist.studentCount !== 1
     || duplicateAndWhitelist.duplicateStudents !== 1
+    || duplicateAndWhitelist.duplicateConflicts.length !== 1
+    || duplicateAndWhitelist.duplicateConflicts[0].oldScore !== 110
+    || duplicateAndWhitelist.duplicateConflicts[0].newScore !== 120
     || duplicateAndWhitelist.chinese !== 120
     || duplicateAndWhitelist.totalSubjects.join('|') !== '语文|物理'
     || duplicateAndWhitelist.totalMax !== 250
@@ -392,6 +475,23 @@ const { chromium } = require(playwrightPath);
     || !duplicateAndWhitelist.hasSportsScore
     || !duplicateAndWhitelist.subjects.includes('体育')) {
     throw new Error(`Duplicate merge or 6-8 total whitelist failed: ${JSON.stringify(duplicateAndWhitelist)}`);
+  }
+  if (advancedImportRules.converted.chinese !== 80
+    || advancedImportRules.converted.physics !== 88
+    || advancedImportRules.converted.chemistry !== 55
+    || advancedImportRules.converted.total !== 423
+    || advancedImportRules.converted.physicsAdjustment.convertedCount !== 1
+    || advancedImportRules.converted.chemistryAdjustment.convertedCount !== 1
+    || advancedImportRules.blankModes.zero.count !== 3
+    || advancedImportRules.blankModes.zero.avg !== 30
+    || advancedImportRules.blankModes.absent.count !== 2
+    || advancedImportRules.blankModes.absent.avg !== 45
+    || advancedImportRules.blankModes.exclude.count !== 1
+    || advancedImportRules.blankModes.exclude.avg !== 90
+    || advancedImportRules.gradeScope.students.join('|') !== '九年级|未知'
+    || advancedImportRules.gradeScope.stats.otherCount !== 1
+    || advancedImportRules.gradeScope.stats.unknown !== 1) {
+    throw new Error(`Advanced import rules failed: ${JSON.stringify(advancedImportRules)}`);
   }
   if (multiColumnParsing.chineseAvg !== 95.09
     || multiColumnParsing.mathScores.join('|') !== '105|120'
@@ -405,5 +505,5 @@ const { chromium } = require(playwrightPath);
     throw new Error(`Multi-column score parsing failed: ${JSON.stringify(multiColumnParsing)}`);
   }
 
-  console.log(JSON.stringify({ ok: true, desktop, mobile, edgeCases, grade9Normalization, explicitSourceMax, duplicateAndWhitelist, moduleConsistency, multiColumnParsing }, null, 2));
+  console.log(JSON.stringify({ ok: true, desktop, mobile, edgeCases, grade9Normalization, explicitSourceMax, duplicateAndWhitelist, advancedImportRules, moduleConsistency, multiColumnParsing }, null, 2));
 })();
