@@ -473,6 +473,30 @@ input[type="number"] {
     width: 90px;
 }
 
+.check-chip-row {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 10px;
+}
+
+.check-chip {
+    display: inline-flex;
+    align-items: center;
+    gap: 7px;
+    min-height: 36px;
+    border: 1px solid var(--line);
+    border-radius: 8px;
+    padding: 0 12px;
+    background: #fff;
+    font-size: 13px;
+    font-weight: 700;
+}
+
+.muted-note {
+    color: var(--muted);
+    font-size: 13px;
+}
+
 .pair-list {
     display: grid;
     grid-template-columns: repeat(2, minmax(0, 1fr));

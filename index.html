@@ -4,7 +4,7 @@
     <meta charset="utf-8">
     <meta name="viewport" content="width=device-width, initial-scale=1">
     <title>校内成绩分析系统</title>
-    <link rel="stylesheet" href="assets/css/app.css?v=20260503-import-rules">
+    <link rel="stylesheet" href="assets/css/app.css?v=20260503-teacher-diagnostics">
     <script src="assets/vendor/xlsx/xlsx.full.min.js"></script>
     <script src="assets/vendor/chart.js/chart.umd.min.js"></script>
 </head>
@@ -228,6 +228,16 @@
                 <section class="panel">
                     <div class="panel-head">
                         <div>
+                            <h2>教师排名科目</h2>
+                            <p>默认使用当前总分科目，额外学科可保留明细但不进总榜。</p>
+                        </div>
+                    </div>
+                    <div class="check-chip-row" id="teacher-rank-subject-list"></div>
+                </section>
+
+                <section class="panel">
+                    <div class="panel-head">
+                        <div>
                             <h2>教师学科明细</h2>
                             <p>同一学科内比较均分、优秀率、达标率、卷面及格率、基础校正和质量分。</p>
                         </div>
@@ -329,6 +339,6 @@
 
     <div class="toast-region" id="toast-region" aria-live="polite"></div>
 
-    <script src="assets/js/app.js?v=20260503-import-rules"></script>
+    <script src="assets/js/app.js?v=20260503-teacher-diagnostics"></script>
 </body>
 </html>

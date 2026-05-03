@@ -288,12 +288,58 @@ const { chromium } = require(playwrightPath);
     };
   });
 
+  const teacherControls = await page.evaluate(() => {
+    const api = window.LocalSchoolAnalytics;
+    const state = api.state;
+    state.grade = 9;
+    state.activeSchool = '教师校';
+    state.students = [
+      { school: '教师校', className: '9.1', name: '甲', id: 'T001', rawScores: { 语文: 120, 政治: 88 }, scores: {}, total: 0, ranks: {} },
+      { school: '教师校', className: '9.2', name: '乙', id: 'T002', rawScores: { 语文: 100, 政治: 72 }, scores: {}, total: 0, ranks: {} },
+      { school: '教师校', className: '9.3', name: '丙', id: 'T003', rawScores: { 语文: 90, 政治: 70 }, scores: {}, total: 0, ranks: {} },
+      { school: '教师校', className: '9.4', name: '丁', id: 'T004', rawScores: { 语文: 80, 政治: 60 }, scores: {}, total: 0, ranks: {} }
+    ];
+    state.subjects = ['语文', '政治'];
+    state.teachers = api.parseTeacherRows([
+      ['班级', '学科', '教师姓名', '教师编号'],
+      ['9.1', '语文', '王老师', 'A01'],
+      ['9.2', '语文', '王老师', 'B02'],
+      ['9.3', '政治', '李老师', ''],
+      ['9.4', '政治', '赵老师', '']
+    ]);
+    state.teacherRankSubjects = [];
+    state.teacherRankSubjectsCustom = false;
+    api.analyze();
+    const defaultFinal = state.finalTeacherRows.map((row) => `${row.teacher}#${row.teacherId || ''}:${row.subjects.map((item) => item.subject).join(',')}`);
+    const defaultDetails = state.teacherRows.map((row) => ({ teacher: row.teacher, id: row.teacherId, subject: row.subject, inFinal: row.inFinalRank }));
+    const defaultDiag = state.teacherDiagnostics;
+    state.teacherRankSubjects = ['语文', '政治'];
+    state.teacherRankSubjectsCustom = true;
+    api.analyze();
+    const manualFinal = state.finalTeacherRows.map((row) => `${row.teacher}#${row.teacherId || ''}:${row.subjects.map((item) => item.subject).join(',')}`);
+    state.teacherRankSubjects = [];
+    state.teacherRankSubjectsCustom = true;
+    api.analyze();
+    const emptyFinalCount = state.finalTeacherRows.length;
+    return {
+      parsed: state.teachers,
+      defaultFinal,
+      defaultDetails,
+      defaultDiag,
+      manualFinal,
+      emptyFinalCount,
+      diagnosticSummary: state.importDiagnostics
+    };
+  });
+
   const moduleConsistency = await page.evaluate(() => {
     const api = window.LocalSchoolAnalytics;
     const state = api.state;
     state.grade = 9;
     state.activeSchool = '模块校';
     state.subjects = ['语文', '数学', '英语', '物理', '化学'];
+    state.teacherRankSubjects = [];
+    state.teacherRankSubjectsCustom = false;
     state.students = [
       { school: '模块校', className: '9.1', name: '完整一', id: 'M001', rawScores: { 语文: 140, 数学: 135, 英语: 130, 物理: 88, 化学: 58 }, scores: {}, total: 0, ranks: {} },
       { school: '模块校', className: '9.1', name: '缺科生', id: 'M002', rawScores: { 语文: 120, 数学: 118, 英语: 110, 物理: 80 }, scores: {}, total: 0, ranks: {} },
@@ -493,6 +539,21 @@ const { chromium } = require(playwrightPath);
     || advancedImportRules.gradeScope.stats.unknown !== 1) {
     throw new Error(`Advanced import rules failed: ${JSON.stringify(advancedImportRules)}`);
   }
+  if (!teacherControls.parsed.some((row) => row.teacher === '王老师' && row.teacherId === 'A01' && row.teacherKey === '王老师#A01')
+    || !teacherControls.parsed.some((row) => row.teacher === '王老师' && row.teacherId === 'B02' && row.teacherKey === '王老师#B02')
+    || teacherControls.defaultFinal.length !== 2
+    || !teacherControls.defaultFinal.includes('王老师#A01:语文')
+    || !teacherControls.defaultFinal.includes('王老师#B02:语文')
+    || teacherControls.defaultDetails.some((row) => row.subject === '政治' && row.inFinal)
+    || teacherControls.defaultDiag.sameName.length !== 1
+    || !teacherControls.defaultDiag.excludedSubjects.includes('政治')
+    || teacherControls.manualFinal.length !== 4
+    || !teacherControls.manualFinal.includes('李老师#:政治')
+    || !teacherControls.manualFinal.includes('赵老师#:政治')
+    || teacherControls.emptyFinalCount !== 0
+    || teacherControls.diagnosticSummary.teacherNoIdCount !== 2) {
+    throw new Error(`Teacher ranking controls failed: ${JSON.stringify(teacherControls)}`);
+  }
   if (multiColumnParsing.chineseAvg !== 95.09
     || multiColumnParsing.mathScores.join('|') !== '105|120'
     || multiColumnParsing.physicsScores.join('|') !== '90|90'
@@ -505,5 +566,5 @@ const { chromium } = require(playwrightPath);
     throw new Error(`Multi-column score parsing failed: ${JSON.stringify(multiColumnParsing)}`);
   }
 
-  console.log(JSON.stringify({ ok: true, desktop, mobile, edgeCases, grade9Normalization, explicitSourceMax, duplicateAndWhitelist, advancedImportRules, moduleConsistency, multiColumnParsing }, null, 2));
+  console.log(JSON.stringify({ ok: true, desktop, mobile, edgeCases, grade9Normalization, explicitSourceMax, duplicateAndWhitelist, advancedImportRules, teacherControls, moduleConsistency, multiColumnParsing }, null, 2));
 })();
