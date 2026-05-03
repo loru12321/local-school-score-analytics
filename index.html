@@ -1,0 +1,311 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>校内成绩分析系统</title>
+    <link rel="stylesheet" href="assets/css/app.css">
+    <script src="assets/vendor/xlsx/xlsx.full.min.js"></script>
+    <script src="assets/vendor/chart.js/chart.umd.min.js"></script>
+</head>
+<body>
+    <div class="app-shell">
+        <aside class="rail">
+            <div class="brand-block">
+                <div class="brand-mark">校</div>
+                <div>
+                    <div class="brand-title">校内成绩分析</div>
+                    <div class="brand-subtitle">6-9 年级本地版</div>
+                </div>
+            </div>
+
+            <nav class="nav-stack" aria-label="主导航">
+                <button class="nav-item active" data-view-target="dashboard">总览</button>
+                <button class="nav-item" data-view-target="import">导入</button>
+                <button class="nav-item" data-view-target="class-view">班级</button>
+                <button class="nav-item" data-view-target="teacher-view">教师</button>
+                <button class="nav-item" data-view-target="student-view">学生</button>
+                <button class="nav-item" data-view-target="export-view">导出</button>
+            </nav>
+
+            <div class="rail-status">
+                <div class="rail-status-label">当前口径</div>
+                <strong id="rail-grade-label">9 年级</strong>
+                <span id="rail-total-label">五科总</span>
+            </div>
+        </aside>
+
+        <main class="workspace">
+            <header class="topbar">
+                <div>
+                    <h1>校内成绩分析系统</h1>
+                    <p id="topbar-copy">本地解析成绩与任课表，生成班级、学科、学生和教师画像。</p>
+                </div>
+                <div class="topbar-actions">
+                    <label class="school-picker" id="school-picker">
+                        <span>学校</span>
+                        <select id="school-select"></select>
+                    </label>
+                    <div class="segmented" id="grade-segment" aria-label="选择年级">
+                        <button data-grade="6">6</button>
+                        <button data-grade="7">7</button>
+                        <button data-grade="8">8</button>
+                        <button data-grade="9" class="active">9</button>
+                    </div>
+                    <button class="ghost-button" id="sample-data-btn">载入示例</button>
+                    <button class="primary-button" data-view-target="import">导入数据</button>
+                </div>
+            </header>
+
+            <section class="view active" id="dashboard">
+                <div class="metric-grid" id="metric-grid"></div>
+
+                <div class="analysis-layout">
+                    <section class="panel chart-panel">
+                        <div class="panel-head">
+                            <div>
+                                <h2>班级总分对比</h2>
+                                <p>按当前年级总分口径计算。</p>
+                            </div>
+                            <span class="status-pill" id="analysis-status">等待数据</span>
+                        </div>
+                        <div class="chart-wrap">
+                            <canvas id="class-total-chart" aria-label="班级总分柱状图"></canvas>
+                        </div>
+                    </section>
+
+                    <section class="panel">
+                        <div class="panel-head">
+                            <div>
+                                <h2>学科得分率雷达</h2>
+                                <p id="subject-radar-note">9 年级五科总只纳入语数英物化。</p>
+                            </div>
+                        </div>
+                        <div class="chart-wrap chart-wrap-small">
+                            <canvas id="subject-radar-chart" aria-label="学科得分率雷达图"></canvas>
+                        </div>
+                    </section>
+                </div>
+
+                <section class="panel">
+                    <div class="panel-head">
+                        <div>
+                            <h2>关键提醒</h2>
+                            <p>来自当前成绩、学科和任课映射。</p>
+                        </div>
+                    </div>
+                    <div class="insight-grid" id="insight-grid"></div>
+                </section>
+            </section>
+
+            <section class="view" id="import">
+                <div class="import-grid">
+                    <section class="panel import-panel">
+                        <div class="panel-head">
+                            <div>
+                                <h2>成绩文件</h2>
+                                <p>支持 xlsx / xls，多 sheet 自动合并。</p>
+                            </div>
+                        </div>
+                        <label class="drop-zone" for="score-file">
+                            <span>选择成绩 Excel</span>
+                            <strong id="score-file-name">未选择文件</strong>
+                        </label>
+                        <input type="file" id="score-file" accept=".xlsx,.xls" multiple hidden>
+                        <div class="button-row">
+                            <button class="primary-button" id="parse-score-btn">解析成绩</button>
+                            <button class="ghost-button" id="download-score-template-btn">成绩模板</button>
+                        </div>
+                    </section>
+
+                    <section class="panel import-panel">
+                        <div class="panel-head">
+                            <div>
+                                <h2>教师任课表</h2>
+                                <p>班级、学科、教师姓名三列即可。</p>
+                            </div>
+                        </div>
+                        <label class="drop-zone" for="teacher-file">
+                            <span>选择任课 Excel</span>
+                            <strong id="teacher-file-name">未选择文件</strong>
+                        </label>
+                        <input type="file" id="teacher-file" accept=".xlsx,.xls" hidden>
+                        <div class="button-row">
+                            <button class="primary-button" id="parse-teacher-btn">解析任课</button>
+                            <button class="ghost-button" id="download-teacher-template-btn">任课模板</button>
+                        </div>
+                    </section>
+                </div>
+
+                <section class="panel">
+                    <div class="panel-head">
+                        <div>
+                            <h2>导入摘要</h2>
+                            <p>当前数据只保存在本机浏览器。</p>
+                        </div>
+                        <div class="button-row">
+                            <button class="ghost-button" id="save-local-btn">保存本地</button>
+                            <button class="ghost-button" id="restore-local-btn">恢复本地</button>
+                            <button class="danger-button" id="clear-data-btn">清空</button>
+                        </div>
+                    </div>
+                    <div class="log-box" id="import-log">暂无导入记录。</div>
+                </section>
+            </section>
+
+            <section class="view" id="class-view">
+                <section class="panel">
+                    <div class="panel-head">
+                        <div>
+                            <h2>班级质量总览</h2>
+                            <p>均分、优秀率、达标率、卷面及格率和低分率按当前年级口径计算。</p>
+                        </div>
+                    </div>
+                    <div class="table-wrap">
+                        <table id="class-table">
+                            <thead></thead>
+                            <tbody></tbody>
+                        </table>
+                    </div>
+                </section>
+
+                <section class="panel">
+                    <div class="panel-head">
+                        <div>
+                            <h2>学科班级矩阵</h2>
+                            <p>用于定位班级和学科短板。</p>
+                        </div>
+                    </div>
+                    <div class="table-wrap">
+                        <table id="subject-matrix-table">
+                            <thead></thead>
+                            <tbody></tbody>
+                        </table>
+                    </div>
+                </section>
+            </section>
+
+            <section class="view" id="teacher-view">
+                <section class="panel">
+                    <div class="panel-head">
+                        <div>
+                            <h2>教师最终排名</h2>
+                            <p>先同学科校正，再跨学科归一。</p>
+                        </div>
+                        <span class="status-pill" id="teacher-status">等待任课表</span>
+                    </div>
+                    <div class="table-wrap">
+                        <table id="teacher-final-table">
+                            <thead></thead>
+                            <tbody></tbody>
+                        </table>
+                    </div>
+                </section>
+
+                <section class="panel">
+                    <div class="panel-head">
+                        <div>
+                            <h2>教师学科明细</h2>
+                            <p>同一学科内比较均分、优秀率、达标率、卷面及格率、基础校正和质量分。</p>
+                        </div>
+                    </div>
+                    <div class="table-wrap">
+                        <table id="teacher-detail-table">
+                            <thead></thead>
+                            <tbody></tbody>
+                        </table>
+                    </div>
+                </section>
+
+                <section class="panel">
+                    <div class="panel-head">
+                        <div>
+                            <h2>教师排名方法</h2>
+                            <p>本地单校版采用无历史成绩时更稳的基础校正法。</p>
+                        </div>
+                    </div>
+                    <div class="method-grid">
+                        <div>
+                            <strong>1. 同学科比较</strong>
+                            <span>语文只和语文比，物理只和物理比，避免跨学科卷面难度影响。</span>
+                        </div>
+                        <div>
+                            <strong>2. 两率一分赋分</strong>
+                            <span>6-8 年级权重 60/70/70，9 年级权重 50/80/50，与原系统一致。</span>
+                        </div>
+                        <div>
+                            <strong>3. 基础校正</strong>
+                            <span>用学生“其他科总分”估算本学科预期分，实际高于预期给正向校正。</span>
+                        </div>
+                        <div>
+                            <strong>4. 样本修正</strong>
+                            <span>样本太小不放大成绩，工作量只做小幅补偿，低分率单独扣分。</span>
+                        </div>
+                        <div>
+                            <strong>5. 最终总榜</strong>
+                            <span>每位教师先得到学科内质量分，再用学科内百分位作辅助，按任教学生数加权汇总。</span>
+                        </div>
+                    </div>
+                </section>
+
+                <section class="panel">
+                    <div class="panel-head">
+                        <div>
+                            <h2>结对子建议</h2>
+                            <p>同学科质量分差距达到 8 分以上时生成。</p>
+                        </div>
+                    </div>
+                    <div class="pair-list" id="pair-list"></div>
+                </section>
+            </section>
+
+            <section class="view" id="student-view">
+                <section class="panel">
+                    <div class="panel-head">
+                        <div>
+                            <h2>学生明细</h2>
+                            <p>支持按班级、学科和姓名筛选。</p>
+                        </div>
+                        <div class="filter-row">
+                            <select id="student-class-filter"></select>
+                            <select id="student-subject-filter"></select>
+                            <input id="student-search" type="search" placeholder="姓名 / 考号">
+                            <button class="ghost-button" id="export-student-ranks-btn">导出学生排名</button>
+                        </div>
+                    </div>
+                    <div class="table-wrap">
+                        <table id="student-table">
+                            <thead></thead>
+                            <tbody></tbody>
+                        </table>
+                    </div>
+                </section>
+
+                <section class="panel">
+                    <div class="panel-head">
+                        <div>
+                            <h2>临界与偏科名单</h2>
+                            <p>临界按距优秀线 / 达标线 5 分内，偏科按总分前 40% 且单科后 40%。</p>
+                        </div>
+                    </div>
+                    <div class="insight-grid" id="student-alert-grid"></div>
+                </section>
+            </section>
+
+            <section class="view" id="export-view">
+                <section class="panel export-panel">
+                    <div>
+                        <h2>导出分析工作簿</h2>
+                        <p>包含班级总览、学科矩阵、教师排名、学生明细和算法口径。</p>
+                    </div>
+                    <button class="primary-button" id="export-workbook-btn">导出 Excel</button>
+                </section>
+            </section>
+        </main>
+    </div>
+
+    <div class="toast-region" id="toast-region" aria-live="polite"></div>
+
+    <script src="assets/js/app.js"></script>
+</body>
+</html>

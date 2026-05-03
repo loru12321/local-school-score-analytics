@@ -1,0 +1,9 @@
+{
+  "name": "local-school-score-analytics",
+  "version": "1.0.0",
+  "private": true,
+  "description": "本地校内成绩分析系统，面向 6-9 年级。",
+  "scripts": {
+    "smoke": "node scripts/smoke.js"
+  }
+}
