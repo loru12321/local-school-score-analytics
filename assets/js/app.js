@@ -35,7 +35,8 @@
             excRatio: 0.2,
             weights: { avg: 60, exc: 70, pass: 70 },
             templateSubjects: ['语文', '数学', '英语', '政治', '历史', '地理', '生物'],
-            maxScores: { '语文': 150, '数学': 150, '英语': 150, '政治': 100, '历史': 50, '地理': 50, '生物': 50 }
+            maxScores: { '语文': 150, '数学': 150, '英语': 150, '政治': 100, '历史': 50, '地理': 50, '生物': 50 },
+            sourceMaxScores: {}
         },
         7: {
             label: '7 年级',
@@ -43,7 +44,8 @@
             excRatio: 0.2,
             weights: { avg: 60, exc: 70, pass: 70 },
             templateSubjects: ['语文', '数学', '英语', '政治', '历史', '地理', '生物'],
-            maxScores: { '语文': 150, '数学': 150, '英语': 150, '政治': 100, '历史': 50, '地理': 50, '生物': 50 }
+            maxScores: { '语文': 150, '数学': 150, '英语': 150, '政治': 100, '历史': 50, '地理': 50, '生物': 50 },
+            sourceMaxScores: {}
         },
         8: {
             label: '8 年级',
@@ -51,7 +53,8 @@
             excRatio: 0.2,
             weights: { avg: 60, exc: 70, pass: 70 },
             templateSubjects: ['语文', '数学', '英语', '物理', '化学', '政治', '历史', '地理', '生物'],
-            maxScores: { '语文': 150, '数学': 150, '英语': 150, '物理': 100, '化学': 100, '政治': 100, '历史': 50, '地理': 50, '生物': 50 }
+            maxScores: { '语文': 150, '数学': 150, '英语': 150, '物理': 100, '化学': 100, '政治': 100, '历史': 50, '地理': 50, '生物': 50 },
+            sourceMaxScores: { '物理': 100, '化学': 100 }
         },
         9: {
             label: '9 年级',
@@ -59,7 +62,8 @@
             excRatio: 0.15,
             weights: { avg: 50, exc: 80, pass: 50 },
             templateSubjects: ['语文', '数学', '英语', '物理', '化学', '政治', '历史', '体育'],
-            maxScores: { '语文': 150, '数学': 150, '英语': 150, '物理': 90, '化学': 60, '政治': 100, '历史': 60, '体育': 50 }
+            maxScores: { '语文': 150, '数学': 150, '英语': 150, '物理': 90, '化学': 60, '政治': 100, '历史': 60, '体育': 50 },
+            sourceMaxScores: { '物理': 100, '化学': 100 }
         }
     };
 
@@ -69,6 +73,9 @@
         students: [],
         subjects: [],
         thresholds: {},
+        blankScoreMode: 'zero',
+        sourceMaxOverrides: {},
+        importStats: { duplicateStudents: 0 },
         teachers: [],
         classRows: [],
         subjectRows: [],
@@ -96,7 +103,7 @@
             'class-table', 'subject-matrix-table', 'teacher-final-table', 'teacher-detail-table',
             'teacher-status', 'pair-list', 'student-class-filter', 'student-subject-filter',
             'student-search', 'student-table', 'student-alert-grid', 'rail-grade-label', 'rail-total-label',
-            'topbar-copy', 'school-select', 'subject-radar-note'
+            'topbar-copy', 'school-select', 'subject-radar-note', 'blank-score-mode', 'score-rule-table'
         ].forEach((id) => {
             els[toCamel(id)] = document.getElementById(id);
         });
@@ -141,6 +148,28 @@
         document.getElementById('clear-data-btn').addEventListener('click', clearData);
         document.getElementById('export-workbook-btn').addEventListener('click', exportWorkbook);
         document.getElementById('export-student-ranks-btn').addEventListener('click', exportStudentRanksWorkbook);
+        if (els.blankScoreMode) {
+            els.blankScoreMode.addEventListener('change', () => {
+                state.blankScoreMode = els.blankScoreMode.value;
+                analyze();
+                renderAll();
+                log(`空白成绩口径切换为：${getBlankScoreModeText()}。`);
+            });
+        }
+        if (els.scoreRuleTable) {
+            els.scoreRuleTable.addEventListener('change', (event) => {
+                const input = event.target.closest('[data-source-max-subject]');
+                if (!input) return;
+                const subject = input.dataset.sourceMaxSubject;
+                const value = Number(input.value);
+                const key = sourceMaxOverrideKey(subject);
+                if (Number.isFinite(value) && value > 0) state.sourceMaxOverrides[key] = value;
+                else delete state.sourceMaxOverrides[key];
+                analyze();
+                renderAll();
+                log(`${subject} 原始满分调整为 ${Number.isFinite(value) && value > 0 ? value : '自动'}。`);
+            });
+        }
         els.schoolSelect.addEventListener('change', () => {
             state.activeSchool = els.schoolSelect.value;
             log(`切换分析学校：${state.activeSchool || '全部'}。`);
@@ -165,18 +194,20 @@
             state.students = [];
             state.subjects = [];
             state.thresholds = {};
+            state.importStats = { duplicateStudents: 0 };
             for (const file of files) {
                 const buffer = await file.arrayBuffer();
                 const workbook = XLSX.read(buffer, { type: 'array' });
                 workbook.SheetNames.forEach((sheetName) => {
-                    const rows = XLSX.utils.sheet_to_json(workbook.Sheets[sheetName], { header: 1, defval: '' });
+                    const rows = worksheetToRows(workbook.Sheets[sheetName]);
                     parseScoreRows(rows, sheetName);
                 });
             }
             state.subjects = sortSubjects([...new Set(state.subjects)]);
+            mergeDuplicateStudents();
             ensureActiveSchool();
             analyze();
-            log(`成绩导入完成：${state.students.length} 名学生，${getAnalysisStudents().length} 名进入当前学校分析，${getClasses().length} 个班级，${getAnalysisSubjects().length} 个学科。`);
+            log(`成绩导入完成：${state.students.length} 名学生，${getAnalysisStudents().length} 名进入当前学校分析，${getClasses().length} 个班级，${getAnalysisSubjects().length} 个学科${state.importStats.duplicateStudents ? `，合并重复 ${state.importStats.duplicateStudents} 条` : ''}。`);
             toast('成绩解析完成。', 'ok');
             renderAll();
         } catch (error) {
@@ -191,7 +222,7 @@
             const workbook = XLSX.read(buffer, { type: 'array' });
             const teachers = [];
             workbook.SheetNames.forEach((sheetName) => {
-                const rows = XLSX.utils.sheet_to_json(workbook.Sheets[sheetName], { header: 1, defval: '' });
+                const rows = worksheetToRows(workbook.Sheets[sheetName]);
                 teachers.push(...parseTeacherRows(rows));
             });
             state.teachers = uniqueTeacherAssignments(teachers);
@@ -204,6 +235,28 @@
             console.error(error);
             toast(`任课表解析失败：${error.message}`, 'warn');
         }
+    }
+
+    function worksheetToRows(sheet) {
+        const rows = XLSX.utils.sheet_to_json(sheet, { header: 1, defval: '' });
+        return fillMergedRows(rows, sheet?.['!merges'] || []);
+    }
+
+    function fillMergedRows(rows, merges = []) {
+        if (!Array.isArray(rows) || !Array.isArray(merges)) return rows;
+        merges.forEach((range) => {
+            const value = rows[range.s.r]?.[range.s.c];
+            if (isBlankScoreCell(value)) return;
+            for (let rowIndex = range.s.r; rowIndex <= range.e.r; rowIndex += 1) {
+                if (!rows[rowIndex]) rows[rowIndex] = [];
+                for (let columnIndex = range.s.c; columnIndex <= range.e.c; columnIndex += 1) {
+                    if (isBlankScoreCell(rows[rowIndex][columnIndex])) {
+                        rows[rowIndex][columnIndex] = value;
+                    }
+                }
+            }
+        });
+        return rows;
     }
 
     function parseScoreRows(rows, defaultSchool) {
@@ -235,6 +288,7 @@
                 name,
                 id: cleanText(idx.id >= 0 ? row[idx.id] : ''),
                 rawScores: {},
+                blankScores: {},
                 scores: {},
                 total: 0,
                 validCount: 0,
@@ -245,8 +299,11 @@
             Object.entries(idx.subjects).forEach(([subject, indexes]) => {
                 let sum = 0;
                 let valid = false;
+                let allBlank = true;
                 indexes.forEach((columnIndex) => {
-                    const score = parseScore(row[columnIndex], true);
+                    const cellValue = row[columnIndex];
+                    if (!isBlankScoreCell(cellValue)) allBlank = false;
+                    const score = parseScore(cellValue, true);
                     if (Number.isFinite(score)) {
                         sum += score;
                         valid = true;
@@ -254,6 +311,7 @@
                 });
                 if (valid) {
                     student.rawScores[subject] = round(sum);
+                    student.blankScores[subject] = allBlank;
                     student.scores[subject] = round(sum);
                     student.validCount += 1;
                     hasScore = true;
@@ -261,6 +319,53 @@
             });
             if (hasScore) state.students.push(student);
         }
+    }
+
+    function mergeDuplicateStudents() {
+        const merged = [];
+        const byKey = new Map();
+        let duplicateCount = 0;
+        state.students.forEach((student) => {
+            const key = studentIdentityKey(student);
+            if (!key || !byKey.has(key)) {
+                const copy = {
+                    ...student,
+                    rawScores: { ...(student.rawScores || {}) },
+                    blankScores: { ...(student.blankScores || {}) },
+                    scores: { ...(student.scores || {}) },
+                    ranks: {}
+                };
+                if (key) byKey.set(key, copy);
+                merged.push(copy);
+                return;
+            }
+            duplicateCount += 1;
+            const existing = byKey.get(key);
+            existing.school = existing.school || student.school;
+            existing.className = existing.className || student.className;
+            existing.name = existing.name || student.name;
+            existing.id = existing.id || student.id;
+            Object.entries(student.rawScores || {}).forEach(([subject, score]) => {
+                if (Number.isFinite(Number(score))) {
+                    existing.rawScores[subject] = score;
+                    existing.blankScores[subject] = Boolean(student.blankScores?.[subject]);
+                    existing.scores[subject] = score;
+                }
+            });
+            existing.validCount = Object.keys(existing.rawScores).length;
+        });
+        state.students = merged;
+        state.importStats.duplicateStudents = duplicateCount;
+    }
+
+    function studentIdentityKey(student) {
+        const school = cleanText(student.school);
+        const className = cleanText(student.className);
+        const id = cleanText(student.id);
+        const name = cleanName(student.name);
+        if (id) return `${school}__${className}__id:${id}`;
+        if (name) return `${school}__${className}__name:${name}`;
+        return '';
     }
 
     function parseTeacherRows(rows) {
@@ -271,7 +376,10 @@
         const classIndex = findBestHeader(headers, CLASS_ALIASES);
         const subjectIndex = findBestHeader(headers, ['学科', '科目', '课程', 'subject']);
         const teacherIndex = findBestHeader(headers, TEACHER_ALIASES);
-        if (classIndex === -1 || subjectIndex === -1 || teacherIndex === -1) return [];
+        if (classIndex === -1) return [];
+        if (subjectIndex === -1 || teacherIndex === -1) {
+            return parseWideTeacherRows(rows, headerIndex, headers, classIndex);
+        }
         const result = [];
         for (let rowIndex = headerIndex + 1; rowIndex < rows.length; rowIndex += 1) {
             const row = rows[rowIndex] || [];
@@ -282,6 +390,34 @@
             result.push({ className, subject, teacher });
         }
         return result;
+    }
+
+    function parseWideTeacherRows(rows, headerIndex, headers, classIndex) {
+        const subjectColumns = headers
+            .map((header, index) => ({ subject: normalizeSubjectHeader(header), index }))
+            .filter((item) => item.subject && item.index !== classIndex);
+        if (!subjectColumns.length) return [];
+        const result = [];
+        for (let rowIndex = headerIndex + 1; rowIndex < rows.length; rowIndex += 1) {
+            const row = rows[rowIndex] || [];
+            const className = normalizeClass(row[classIndex]);
+            if (!className) continue;
+            subjectColumns.forEach(({ subject, index }) => {
+                splitTeacherCell(row[index]).forEach((teacher) => {
+                    result.push({ className, subject, teacher });
+                });
+            });
+        }
+        return result;
+    }
+
+    function splitTeacherCell(value) {
+        const text = cleanText(value);
+        if (!text) return [];
+        return text
+            .split(/[、，,；;\/]+/)
+            .map((item) => cleanText(item))
+            .filter(Boolean);
     }
 
     function analyze() {
@@ -312,6 +448,7 @@
         state.subjects.forEach((subject) => {
             const targetMax = getSubjectMaxScore(subject);
             const rawValues = analysisStudents
+                .filter((student) => !shouldExcludeBlankScore(student, subject))
                 .map((student) => student.rawScores?.[subject])
                 .map(Number)
                 .filter(Number.isFinite);
@@ -331,6 +468,7 @@
         state.students.forEach((student) => {
             const normalized = {};
             state.subjects.forEach((subject) => {
+                if (shouldExcludeBlankScore(student, subject)) return;
                 const rawScore = Number(student.rawScores?.[subject]);
                 if (!Number.isFinite(rawScore)) return;
                 const rule = adjustments[subject] || {};
@@ -347,16 +485,25 @@
         if (!student.rawScores || typeof student.rawScores !== 'object') {
             student.rawScores = { ...(student.scores || {}) };
         }
+        if (!student.blankScores || typeof student.blankScores !== 'object') {
+            student.blankScores = {};
+        }
     }
 
     function inferSourceMax(subject, observedMax, targetMax) {
         const observed = Number(observedMax || 0);
         const target = Number(targetMax || 0);
+        const configuredSourceMax = getConfiguredSourceMaxScore(subject);
+        if (Number.isFinite(configuredSourceMax) && configuredSourceMax > 0) return configuredSourceMax;
         if (!target || observed <= 0) return target || observed || 0;
         const tolerance = Math.max(3, target * 0.05);
         if (observed <= target + tolerance) return target;
         if (state.grade === 9 && ['物理', '化学'].includes(subject) && observed <= 100) return 100;
         return STANDARD_FULL_MARKS.find((mark) => mark >= observed - 0.001 && mark > target) || observed;
+    }
+
+    function shouldExcludeBlankScore(student, subject) {
+        return state.blankScoreMode === 'exclude' && Boolean(student.blankScores?.[subject]);
     }
 
     function buildThresholds() {
@@ -680,6 +827,7 @@
         renderCharts();
         renderInsights();
         renderImportLog();
+        renderScoreRules();
         renderClassTable();
         renderSubjectMatrix();
         renderTeacherTables();
@@ -701,7 +849,7 @@
         if (els.subjectRadarNote) {
             els.subjectRadarNote.textContent = state.grade === 9
                 ? '9 年级五科总只纳入语数英物化。'
-                : `${currentConfig().label}按全科总口径显示所有识别学科。`;
+                : `${currentConfig().label}总分只纳入年级配置内学科，额外列保留单科诊断。`;
         }
     }
 
@@ -782,9 +930,8 @@
     function renderInsights() {
         const analysisStudents = getAnalysisStudents();
         const missingTeacher = analysisStudents.length && !state.teachers.length;
-        const grade9Extra = state.grade === 9
-            ? getAnalysisSubjects().filter((subject) => !CORE_GRADE9.includes(subject))
-            : [];
+        const totalSubjects = getTotalSubjects();
+        const extraSingleSubjects = getAnalysisSubjects().filter((subject) => !totalSubjects.includes(subject));
         const adjustmentSummary = getScoreAdjustmentSummary();
         const weakClass = state.classRows.slice().sort((a, b) => a.qualityScore - b.qualityScore)[0];
         const topSubject = state.subjectRows.slice().sort((a, b) => b.scoreRate - a.scoreRate)[0];
@@ -792,13 +939,13 @@
             missingTeacher
                 ? { title: '任课表缺失', body: '教师画像需要导入班级、学科、教师姓名映射。' }
                 : { title: '任课映射', body: `${state.teachers.length} 条映射，已覆盖 ${new Set(state.teachers.map((item) => item.subject)).size} 个学科。` },
-            grade9Extra.length
-                ? { title: '9 年级展示科目', body: `${grade9Extra.join('、')} 保留单科诊断，不计入五科总。` }
-                : { title: '总分口径', body: `${currentConfig().totalLabel}：${getTotalSubjects().join('、') || '等待学科识别'}。` },
+            extraSingleSubjects.length
+                ? { title: '单科诊断', body: `${extraSingleSubjects.join('、')} 不计入${currentConfig().totalLabel}，只保留单科分析。` }
+                : { title: '总分口径', body: `${currentConfig().totalLabel}：${totalSubjects.join('、') || '等待学科识别'}。` },
             { title: '满分口径', body: getMaxScoreSummary() },
             adjustmentSummary
                 ? { title: '成绩折算', body: adjustmentSummary }
-                : { title: '成绩折算', body: '导入分未超过当前年级满分时按原分计算；超出满分时自动折算并封顶。' },
+                : { title: '成绩折算', body: '按原始满分确认表折算；未配置原始满分的科目保持自动推断并封顶。' },
             weakClass
                 ? { title: '班级关注', body: `${weakClass.className} 综合分 ${weakClass.qualityScore.toFixed(1)}，可优先看学科矩阵。` }
                 : { title: '班级关注', body: '导入成绩后自动生成班级站位。' },
@@ -820,6 +967,38 @@
 
     function renderImportLog() {
         els.importLog.textContent = state.logs.length ? state.logs.slice(-8).join('\n') : '暂无导入记录。';
+    }
+
+    function renderScoreRules() {
+        if (els.blankScoreMode) els.blankScoreMode.value = state.blankScoreMode || 'zero';
+        if (!els.scoreRuleTable) return;
+        const subjects = getRuleSubjects();
+        els.scoreRuleTable.querySelector('thead').innerHTML = `
+            <tr>
+                <th>学科</th><th>配置满分</th><th>导入最高分</th><th>原始满分</th><th>折算系数</th><th>总分口径</th>
+            </tr>
+        `;
+        els.scoreRuleTable.querySelector('tbody').innerHTML = subjects.length
+            ? subjects.map((subject) => {
+                const rule = state.scoreAdjustments?.[subject] || {};
+                const configured = getConfiguredSourceMaxScore(subject);
+                const inputValue = Number.isFinite(configured) && configured > 0 ? configured : '';
+                const totalSubjectSet = getAnalysisSubjects().length ? getTotalSubjects() : getConfiguredTotalSubjects();
+                const totalIncluded = totalSubjectSet.includes(subject);
+                return `
+                    <tr>
+                        <td>${escapeHtml(subject)}</td>
+                        <td>${getSubjectMaxScore(subject)}</td>
+                        <td>${formatScore(rule.observedMax, 1)}</td>
+                        <td>
+                            <input class="score-rule-input" type="number" min="1" step="0.1" placeholder="自动" value="${escapeAttr(inputValue)}" data-source-max-subject="${escapeAttr(subject)}">
+                        </td>
+                        <td>${Number.isFinite(Number(rule.scale)) ? Number(rule.scale).toFixed(4) : '-'}</td>
+                        <td>${totalIncluded ? '计入总分' : '单科诊断'}</td>
+                    </tr>
+                `;
+            }).join('')
+            : emptyRow(6);
     }
 
     function renderClassTable() {
@@ -1040,7 +1219,7 @@
             {
                 name: '成绩折算',
                 rows: [
-                    ['学科', '配置满分', '导入最高分', '推断原始满分', '折算系数', '处理'],
+                    ['学科', '配置满分', '导入最高分', '原始满分', '折算系数', '处理'],
                     ...getScoreAdjustmentRows()
                 ]
             },
@@ -1077,7 +1256,9 @@
                     ['年级', currentConfig().label],
                     ['总分科目', getTotalSubjects().join('、')],
                     ['满分配置', getMaxScoreSummary()],
-                    ['成绩折算', getScoreAdjustmentSummary() || '导入分未超过配置满分时按原分计算；超出时按推断原始满分折算到当前年级满分并封顶。'],
+                    ['原始满分', getSourceMaxSummary()],
+                    ['空白成绩', getBlankScoreModeText()],
+                    ['成绩折算', getScoreAdjustmentSummary() || '按“原始满分→配置满分”的口径折算；未配置原始满分的科目在未超过配置满分时按原分，超出时自动推断并封顶。'],
                     ['优秀线', state.grade === 9 ? '本年级前 15%' : '本年级前 20%'],
                     ['达标线', '本年级前 50%，另列卷面及格率=满分60%'],
                     ['两率一分权重', `${currentConfig().weights.avg}/${currentConfig().weights.exc}/${currentConfig().weights.pass}`],
@@ -1101,7 +1282,9 @@
                     ['年级', currentConfig().label],
                     ['总分科目', getTotalSubjects().join('、')],
                     ['满分配置', getMaxScoreSummary()],
-                    ['成绩折算', getScoreAdjustmentSummary() || '导入分未超过配置满分时按原分计算；超出时按推断原始满分折算到当前年级满分并封顶。'],
+                    ['原始满分', getSourceMaxSummary()],
+                    ['空白成绩', getBlankScoreModeText()],
+                    ['成绩折算', getScoreAdjustmentSummary() || '按“原始满分→配置满分”的口径折算；未配置原始满分的科目在未超过配置满分时按原分，超出时自动推断并封顶。'],
                     ['排名', '校排为当前所选学校内排名；班排为当前班级内排名；同分并列。']
                 ]
             }
@@ -1151,6 +1334,9 @@
             students: state.students,
             subjects: state.subjects,
             teachers: state.teachers,
+            blankScoreMode: state.blankScoreMode,
+            sourceMaxOverrides: state.sourceMaxOverrides,
+            importStats: state.importStats,
             logs: state.logs
         }));
         toast('已保存到本机浏览器。', 'ok');
@@ -1166,6 +1352,9 @@
             state.students = Array.isArray(data.students) ? data.students : [];
             state.subjects = sortSubjects(Array.isArray(data.subjects) ? data.subjects : []);
             state.teachers = Array.isArray(data.teachers) ? data.teachers : [];
+            state.blankScoreMode = ['zero', 'exclude', 'absent'].includes(data.blankScoreMode) ? data.blankScoreMode : 'zero';
+            state.sourceMaxOverrides = data.sourceMaxOverrides && typeof data.sourceMaxOverrides === 'object' ? data.sourceMaxOverrides : {};
+            state.importStats = data.importStats && typeof data.importStats === 'object' ? data.importStats : { duplicateStudents: 0 };
             state.logs = Array.isArray(data.logs) ? data.logs : [];
             ensureActiveSchool();
             document.querySelectorAll('#grade-segment button').forEach((button) => {
@@ -1185,6 +1374,7 @@
         state.activeSchool = '';
         state.subjects = [];
         state.thresholds = {};
+        state.importStats = { duplicateStudents: 0 };
         state.teachers = [];
         state.classRows = [];
         state.subjectRows = [];
@@ -1216,6 +1406,7 @@
                     name: `${names[(i + classIndex * 3) % names.length]}${i + 1}`,
                     id: String(id++),
                     rawScores: {},
+                    blankScores: {},
                     scores: {},
                     total: 0,
                     validCount: subjects.length,
@@ -1287,11 +1478,18 @@
 
     function getTotalSubjects() {
         const subjects = getAnalysisSubjects();
+        const configuredSubjects = getConfiguredTotalSubjects();
         if (state.grade === 9) {
-            const presentCore = CORE_GRADE9.filter((subject) => subjects.includes(subject));
-            return presentCore.length ? presentCore : subjects.slice();
+            return CORE_GRADE9.filter((subject) => subjects.includes(subject));
         }
-        return subjects.slice();
+        return configuredSubjects.filter((subject) => subjects.includes(subject));
+    }
+
+    function getConfiguredTotalSubjects() {
+        const config = currentConfig();
+        if (state.grade === 9) return CORE_GRADE9.slice();
+        return (config.templateSubjects || [])
+            .filter((subject) => Object.prototype.hasOwnProperty.call(config.maxScores || {}, subject));
     }
 
     function getSubjectMaxScore(subject) {
@@ -1309,6 +1507,41 @@
         const subjects = getAnalysisSubjects();
         if (!subjects.length) return '等待识别学科后显示。';
         return subjects.map((subject) => `${subject}${getSubjectMaxScore(subject)}`).join('、');
+    }
+
+    function getSourceMaxSummary() {
+        const items = getRuleSubjects()
+            .map((subject) => {
+                const sourceMax = getConfiguredSourceMaxScore(subject);
+                return Number.isFinite(sourceMax) && sourceMax > 0 ? `${subject}${sourceMax}` : '';
+            })
+            .filter(Boolean);
+        return items.length ? items.join('、') : '未手动配置，按导入分自动推断。';
+    }
+
+    function getRuleSubjects() {
+        const config = currentConfig();
+        return sortSubjects([...new Set([...(config.templateSubjects || []), ...getAnalysisSubjects()])]);
+    }
+
+    function sourceMaxOverrideKey(subject) {
+        return `${state.grade}__${subject}`;
+    }
+
+    function getConfiguredSourceMaxScore(subject) {
+        const override = Number(state.sourceMaxOverrides?.[sourceMaxOverrideKey(subject)]);
+        if (Number.isFinite(override) && override > 0) return override;
+        const configured = Number(currentConfig().sourceMaxScores?.[subject]);
+        return Number.isFinite(configured) && configured > 0 ? configured : NaN;
+    }
+
+    function getBlankScoreModeText() {
+        const labels = {
+            zero: '空白按 0 分',
+            exclude: '空白剔除',
+            absent: '缺考按 0 分'
+        };
+        return labels[state.blankScoreMode] || labels.zero;
     }
 
     function getScoreAdjustmentRows() {
@@ -1399,6 +1632,12 @@
 
     function normalizeClass(value) {
         const original = cleanText(value).replace(/\s+/g, '');
+        const chineseDottedMatch = original.match(/^([六七八九6-9])(?:年级|年)?[.．·、,_-]?([一二三四五六七八九十〇零]+|\d{1,2})(?:班)?(?:\d{1,3}人?)?$/);
+        if (chineseDottedMatch) {
+            const grade = parseGradeToken(chineseDottedMatch[1]);
+            const classNo = parseClassToken(chineseDottedMatch[2]);
+            if (grade && classNo) return `${grade}.${classNo}`;
+        }
         const chineseMatch = original.match(/^([六七八九6-9])(?:年级|年)?([一二三四五六七八九十〇零0-9]+)(?:班)?$/);
         if (chineseMatch) {
             const grade = parseGradeToken(chineseMatch[1]);
@@ -1449,6 +1688,10 @@
         return match ? Number(match[0]) : NaN;
     }
 
+    function isBlankScoreCell(value) {
+        return cleanText(value) === '';
+    }
+
     function findHeaderRow(rows) {
         for (let i = 0; i < Math.min(rows.length, 8); i += 1) {
             const headers = (rows[i] || []).map((cell) => cleanHeader(cell));
@@ -1465,7 +1708,8 @@
             const hasClass = findBestHeader(headers, CLASS_ALIASES) !== -1;
             const hasSubject = findBestHeader(headers, ['学科', '科目', '课程', 'subject']) !== -1;
             const hasTeacher = findBestHeader(headers, TEACHER_ALIASES) !== -1;
-            if (hasClass && hasSubject && hasTeacher) return i;
+            const wideSubjectCount = headers.filter((header) => normalizeSubjectHeader(header)).length;
+            if (hasClass && ((hasSubject && hasTeacher) || wideSubjectCount > 0)) return i;
         }
         return 0;
     }
@@ -1763,8 +2007,12 @@
         getAnalysisStudents,
         getAnalysisSubjects,
         getScoreAdjustmentSummary,
+        getBlankScoreModeText,
+        getConfiguredSourceMaxScore,
         normalizeClass,
         normalizeScoresForCurrentGrade,
+        mergeDuplicateStudents,
+        fillMergedRows,
         parseTeacherRows,
         parseScoreRows,
         buildSubjectColumns,

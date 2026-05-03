@@ -32,7 +32,7 @@ const { chromium } = require(playwrightPath);
     biologyMax: window.LocalSchoolAnalytics.getSubjectMaxScore('生物'),
     totalMax: window.LocalSchoolAnalytics.getTotalMaxScore(),
     classes: [...new Set(window.LocalSchoolAnalytics.getAnalysisStudents().map((student) => student.className))],
-    normalizedClasses: ['6.10班', '6年10班', '610', '10班', '六年级十班'].map((value) => window.LocalSchoolAnalytics.normalizeClass(value)),
+    normalizedClasses: ['6.10班', '6年10班', '610', '10班', '六年级十班', '六.十48', '九.六44'].map((value) => window.LocalSchoolAnalytics.normalizeClass(value)),
     studentRankHeader: window.LocalSchoolAnalytics.buildStudentRankRows()[0]
   }));
   await page.getByRole('button', { name: '9' }).click();
@@ -92,6 +92,27 @@ const { chromium } = require(playwrightPath);
     };
   });
 
+  const explicitSourceMax = await page.evaluate(() => {
+    const api = window.LocalSchoolAnalytics;
+    const state = api.state;
+    state.grade = 9;
+    state.activeSchool = '难卷校';
+    state.blankScoreMode = 'zero';
+    state.sourceMaxOverrides = {};
+    state.subjects = ['物理', '化学'];
+    state.students = [
+      { school: '难卷校', className: '9.1', name: '甲', id: 'D001', rawScores: { 物理: 88, 化学: 50 }, scores: {}, total: 0, ranks: {} },
+      { school: '难卷校', className: '9.2', name: '乙', id: 'D002', rawScores: { 物理: 70, 化学: 40 }, scores: {}, total: 0, ranks: {} }
+    ];
+    state.teachers = [];
+    api.analyze();
+    return {
+      firstScores: state.students[0].scores,
+      firstTotal: state.students[0].total,
+      adjustments: state.scoreAdjustments
+    };
+  });
+
   await page.setViewportSize({ width: 390, height: 844 });
   await page.waitForTimeout(250);
   const mobile = await page.evaluate(() => ({
@@ -107,9 +128,29 @@ const { chromium } = require(playwrightPath);
       ['班级', '学科', '教师姓名'],
       ['8.10班', '物理', '张老师']
     ]);
+    const wideTeacherRows = api.parseTeacherRows([
+      ['初中部任课教师一览表'],
+      ['级部主任', '班级', '班主任', '语文', '数学', '英语', '物理', '化学', '政治'],
+      ['宋波', '九.六44', '班主任', '语文甲/语文乙', '数学甲', '英语甲', '物理甲', '化学甲', '政治甲']
+    ]);
+    const mergedTeacherSourceRows = [
+      ['初中部任课教师一览表'],
+      ['级部主任', '班级', '班主任', '语文', '数学', '英语', '物理', '化学'],
+      ['商建军', '九.一50', '商建军', '李秀莉', '宋利华', '陈丽军', '商建军', '张景旭'],
+      ['', '九.二48', '卞如如', '', '', '', '', '']
+    ];
+    api.fillMergedRows(mergedTeacherSourceRows, [
+      { s: { r: 2, c: 3 }, e: { r: 3, c: 3 } },
+      { s: { r: 2, c: 4 }, e: { r: 3, c: 4 } },
+      { s: { r: 2, c: 5 }, e: { r: 3, c: 5 } },
+      { s: { r: 2, c: 6 }, e: { r: 3, c: 6 } },
+      { s: { r: 2, c: 7 }, e: { r: 3, c: 7 } }
+    ]);
+    const mergedTeacherRows = api.parseTeacherRows(mergedTeacherSourceRows);
     const state = api.state;
     state.grade = 8;
     state.activeSchool = '甲校';
+    state.blankScoreMode = 'zero';
     state.students = [
       { school: '甲校', className: '8.1', name: '甲一', id: 'A001', scores: { 语文: 120 }, total: 0, ranks: {} },
       { school: '甲校', className: '8.1', name: '甲二', id: 'A002', scores: { 语文: 105 }, total: 0, ranks: {} },
@@ -124,12 +165,46 @@ const { chromium } = require(playwrightPath);
     api.analyze();
     return {
       teacherTitleRows,
+      wideTeacherRows,
+      mergedTeacherRows,
       analysisSubjects: api.getAnalysisSubjects(),
       totalSubjects: api.getTotalSubjects(),
       finalTeachers: state.finalTeacherRows.map((row) => row.teacher),
       teacherRows: state.teacherRows.map((row) => ({ teacher: row.teacher, subject: row.subject, classes: row.classes, count: row.studentCount })),
       unmatched: state.teacherCoverage.unmatched,
       rankHeader: api.buildStudentRankRows()[0]
+    };
+  });
+
+  const duplicateAndWhitelist = await page.evaluate(() => {
+    const api = window.LocalSchoolAnalytics;
+    const state = api.state;
+    state.grade = 8;
+    state.activeSchool = '白名单校';
+    state.students = [];
+    state.subjects = [];
+    state.teachers = [];
+    state.importStats = { duplicateStudents: 0 };
+    state.blankScoreMode = 'zero';
+    api.parseScoreRows([
+      ['学校', '班级', '姓名', '考号', '语文', '物理', '体育', '科学'],
+      ['白名单校', '8.1', '甲', 'W001', 110, 80, 50, 70]
+    ], '成绩');
+    api.parseScoreRows([
+      ['学校', '班级', '姓名', '考号', '语文'],
+      ['白名单校', '8.1', '甲', 'W001', 120]
+    ], '成绩');
+    api.mergeDuplicateStudents();
+    api.analyze();
+    return {
+      studentCount: state.students.length,
+      duplicateStudents: state.importStats.duplicateStudents,
+      subjects: api.getAnalysisSubjects(),
+      totalSubjects: api.getTotalSubjects(),
+      totalMax: api.getTotalMaxScore(),
+      total: state.students[0].total,
+      chinese: state.students[0].scores.语文,
+      hasSportsScore: Number.isFinite(Number(state.students[0].scores.体育))
     };
   });
 
@@ -186,6 +261,10 @@ const { chromium } = require(playwrightPath);
     const classRow = state.classRows.find((row) => row.className === '9.6');
     const blankClassRow = state.classRows.find((row) => row.className === '9.5');
     const class96Students = state.students.filter((student) => student.className === '9.6');
+    state.blankScoreMode = 'exclude';
+    api.analyze();
+    const excludeBlankClassRow = state.classRows.find((row) => row.className === '9.5');
+    state.blankScoreMode = 'zero';
     return {
       subjects: api.getAnalysisSubjects(),
       chineseAvg: Number(classRow.subjects.语文.avg.toFixed(2)),
@@ -194,6 +273,8 @@ const { chromium } = require(playwrightPath);
       chemistryScores: class96Students.map((student) => student.scores.化学),
       blankChineseAvg: blankClassRow.subjects.语文.avg,
       blankChineseCount: blankClassRow.subjects.语文.count,
+      excludeBlankChineseAvg: excludeBlankClassRow.subjects.语文.avg,
+      excludeBlankChineseCount: excludeBlankClassRow.subjects.语文.count,
       totals: class96Students.map((student) => student.total)
     };
   });
@@ -241,7 +322,16 @@ const { chromium } = require(playwrightPath);
     || !grade9Normalization.summary.includes('化学100→60')) {
     throw new Error(`Grade 9 score normalization failed: ${JSON.stringify(grade9Normalization)}`);
   }
-  if (grade8Config.normalizedClasses.join('|') !== '6.10|6.10|6.10|8.10|6.10') {
+  if (explicitSourceMax.firstScores.物理 !== 79.2
+    || explicitSourceMax.firstScores.化学 !== 30
+    || explicitSourceMax.firstTotal !== 109.2
+    || explicitSourceMax.adjustments.物理.sourceMax !== 100
+    || explicitSourceMax.adjustments.化学.sourceMax !== 100
+    || explicitSourceMax.adjustments.物理.scale !== 0.9
+    || explicitSourceMax.adjustments.化学.scale !== 0.6) {
+    throw new Error(`Explicit source max should not depend on observed max: ${JSON.stringify(explicitSourceMax)}`);
+  }
+  if (grade8Config.normalizedClasses.join('|') !== '6.10|6.10|6.10|8.10|6.10|6.10|9.6') {
     throw new Error(`Class normalization failed: ${JSON.stringify(grade8Config.normalizedClasses)}`);
   }
   if (!grade8Config.studentRankHeader.includes('物理校排') || !grade8Config.studentRankHeader.includes('总分校排')) {
@@ -261,6 +351,17 @@ const { chromium } = require(playwrightPath);
   }
   if (edgeCases.teacherTitleRows.length !== 1 || edgeCases.teacherTitleRows[0].className !== '8.10') {
     throw new Error(`Teacher header detection failed: ${JSON.stringify(edgeCases.teacherTitleRows)}`);
+  }
+  if (edgeCases.wideTeacherRows.length !== 7
+    || !edgeCases.wideTeacherRows.every((row) => row.className === '9.6')
+    || !edgeCases.wideTeacherRows.some((row) => row.subject === '语文' && row.teacher === '语文乙')
+    || !edgeCases.wideTeacherRows.some((row) => row.subject === '化学' && row.teacher === '化学甲')) {
+    throw new Error(`Wide teacher roster parsing failed: ${JSON.stringify(edgeCases.wideTeacherRows)}`);
+  }
+  if (edgeCases.mergedTeacherRows.length !== 10
+    || !edgeCases.mergedTeacherRows.some((row) => row.className === '9.2' && row.subject === '语文' && row.teacher === '李秀莉')
+    || !edgeCases.mergedTeacherRows.some((row) => row.className === '9.2' && row.subject === '化学' && row.teacher === '张景旭')) {
+    throw new Error(`Merged teacher roster parsing failed: ${JSON.stringify(edgeCases.mergedTeacherRows)}`);
   }
   if (edgeCases.analysisSubjects.join('|') !== '语文' || edgeCases.totalSubjects.join('|') !== '语文') {
     throw new Error(`Active school subject isolation failed: ${JSON.stringify(edgeCases)}`);
@@ -282,15 +383,27 @@ const { chromium } = require(playwrightPath);
     || moduleConsistency.classOne.absoluteScore <= 0) {
     throw new Error(`Module consistency checks failed: ${JSON.stringify(moduleConsistency)}`);
   }
+  if (duplicateAndWhitelist.studentCount !== 1
+    || duplicateAndWhitelist.duplicateStudents !== 1
+    || duplicateAndWhitelist.chinese !== 120
+    || duplicateAndWhitelist.totalSubjects.join('|') !== '语文|物理'
+    || duplicateAndWhitelist.totalMax !== 250
+    || duplicateAndWhitelist.total !== 200
+    || !duplicateAndWhitelist.hasSportsScore
+    || !duplicateAndWhitelist.subjects.includes('体育')) {
+    throw new Error(`Duplicate merge or 6-8 total whitelist failed: ${JSON.stringify(duplicateAndWhitelist)}`);
+  }
   if (multiColumnParsing.chineseAvg !== 95.09
     || multiColumnParsing.mathScores.join('|') !== '105|120'
     || multiColumnParsing.physicsScores.join('|') !== '90|90'
     || multiColumnParsing.chemistryScores.join('|') !== '60|48'
     || multiColumnParsing.blankChineseAvg !== 0
     || multiColumnParsing.blankChineseCount !== 1
+    || multiColumnParsing.excludeBlankChineseAvg !== 0
+    || multiColumnParsing.excludeBlankChineseCount !== 0
     || multiColumnParsing.totals.some((value) => value > 600)) {
     throw new Error(`Multi-column score parsing failed: ${JSON.stringify(multiColumnParsing)}`);
   }
 
-  console.log(JSON.stringify({ ok: true, desktop, mobile, edgeCases, grade9Normalization, moduleConsistency, multiColumnParsing }, null, 2));
+  console.log(JSON.stringify({ ok: true, desktop, mobile, edgeCases, grade9Normalization, explicitSourceMax, duplicateAndWhitelist, moduleConsistency, multiColumnParsing }, null, 2));
 })();

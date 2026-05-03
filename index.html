@@ -4,7 +4,7 @@
     <meta charset="utf-8">
     <meta name="viewport" content="width=device-width, initial-scale=1">
     <title>校内成绩分析系统</title>
-    <link rel="stylesheet" href="assets/css/app.css?v=20260503-score-columns">
+    <link rel="stylesheet" href="assets/css/app.css?v=20260503-rules">
     <script src="assets/vendor/xlsx/xlsx.full.min.js"></script>
     <script src="assets/vendor/chart.js/chart.umd.min.js"></script>
 </head>
@@ -122,7 +122,7 @@
                         <div class="panel-head">
                             <div>
                                 <h2>教师任课表</h2>
-                                <p>班级、学科、教师姓名三列即可。</p>
+                                <p>支持“班级、学科、教师姓名”三列，也支持班级横向展开学科的宽表。</p>
                             </div>
                         </div>
                         <label class="drop-zone" for="teacher-file">
@@ -136,6 +136,29 @@
                         </div>
                     </section>
                 </div>
+
+                <section class="panel">
+                    <div class="panel-head">
+                        <div>
+                            <h2>计算口径</h2>
+                            <p>确认原始满分、空白成绩和总分纳入学科。</p>
+                        </div>
+                        <label class="setting-control">
+                            <span>空白成绩</span>
+                            <select id="blank-score-mode">
+                                <option value="zero">空白按 0 分</option>
+                                <option value="exclude">空白剔除</option>
+                                <option value="absent">缺考按 0 分</option>
+                            </select>
+                        </label>
+                    </div>
+                    <div class="table-wrap">
+                        <table id="score-rule-table">
+                            <thead></thead>
+                            <tbody></tbody>
+                        </table>
+                    </div>
+                </section>
 
                 <section class="panel">
                     <div class="panel-head">

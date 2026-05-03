@@ -449,13 +449,28 @@ tbody tr:hover {
 }
 
 select,
-input[type="search"] {
+input[type="search"],
+input[type="number"] {
     min-height: 38px;
     border: 1px solid var(--line);
     border-radius: 8px;
     padding: 0 10px;
     background: #fff;
     color: var(--ink);
+}
+
+.setting-control {
+    display: inline-flex;
+    align-items: center;
+    gap: 8px;
+    min-height: 38px;
+    color: #475569;
+    font-size: 12px;
+    font-weight: 800;
+}
+
+.score-rule-input {
+    width: 90px;
 }
 
 .pair-list {
