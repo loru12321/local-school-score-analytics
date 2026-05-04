@@ -2813,6 +2813,12 @@
             return null;
         }
         const client = getSupabaseClient();
+        const { data: sessionData, error: sessionError } = await client.auth.getSession();
+        if (sessionError || !sessionData?.session) {
+            state.cloudUser = null;
+            renderCloudPanel();
+            return null;
+        }
         const { data, error } = await client.auth.getUser();
         if (error) {
             state.cloudUser = null;
@@ -2832,15 +2838,21 @@
             const client = getSupabaseClient();
             let { data, error } = await client.auth.signInWithPassword({ email, password });
             if (error) {
+                if (isCloudEmailConfirmationError(error)) {
+                    state.cloudUser = null;
+                    throw new Error('邮箱尚未确认，请先在 Supabase Auth 中确认该账号，或关闭邮箱确认后重新登录。');
+                }
+                if (!isCloudInvalidCredentialsError(error)) throw error;
                 const signUp = await client.auth.signUp({ email, password });
                 data = signUp.data;
                 error = signUp.error;
             }
             if (error) throw error;
-            state.cloudUser = data?.user || null;
-            if (!state.cloudUser) {
+            if (!data?.session) {
+                state.cloudUser = null;
                 toast('注册请求已提交；如果项目开启邮箱确认，请先完成确认再登录。', 'warn');
             } else {
+                state.cloudUser = data?.user || null;
                 toast('Supabase 已登录。', 'ok');
                 await loadCloudSnapshots();
             }
@@ -2999,8 +3011,17 @@
         const text = cleanText(error?.message || error);
         if (/relation .*analysis_snapshots.*does not exist/i.test(text)) return '数据库表不存在，请先在 Supabase SQL Editor 执行 supabase/migrations/20260504_school_analysis_cloud.sql。';
         if (/row-level security|permission denied|violates row-level security/i.test(text)) return '权限策略未生效或未登录，请检查 RLS 脚本和当前账号。';
+        if (/email_not_confirmed|Email not confirmed|邮箱尚未确认/i.test(text)) return '邮箱尚未确认，请先在 Supabase Auth 中确认该账号，或关闭邮箱确认后重新登录。';
         if (/Invalid login credentials/i.test(text)) return '邮箱或密码不正确；如刚注册且开启邮箱确认，请先确认邮件。';
         return text || '未知错误';
+    }
+
+    function isCloudEmailConfirmationError(error) {
+        return /email_not_confirmed|Email not confirmed/i.test(cleanText(`${error?.code || ''} ${error?.message || error}`));
+    }
+
+    function isCloudInvalidCredentialsError(error) {
+        return /invalid_credentials|Invalid login credentials|user not found/i.test(cleanText(`${error?.code || ''} ${error?.message || error}`));
     }
 
     function renderPrivacyPanel() {
