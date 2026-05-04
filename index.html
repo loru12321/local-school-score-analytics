@@ -4,7 +4,7 @@
     <meta charset="utf-8">
     <meta name="viewport" content="width=device-width, initial-scale=1">
     <title>校内成绩分析系统</title>
-    <link rel="stylesheet" href="assets/css/app.css?v=20260504-supabase-cloud">
+    <link rel="stylesheet" href="assets/css/app.css?v=20260504-cloud-scope">
     <script src="assets/vendor/xlsx/xlsx.full.min.js"></script>
     <script src="assets/vendor/chart.js/chart.umd.min.js"></script>
     <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
@@ -506,6 +506,7 @@
                         <button class="ghost-button" id="cloud-refresh-btn">刷新云端历史</button>
                     </div>
                     <div class="filter-row">
+                        <select id="cloud-history-scope"></select>
                         <select id="cloud-history-select"></select>
                         <button class="ghost-button" id="cloud-use-baseline-btn">作为历史基准</button>
                         <button class="ghost-button" id="cloud-restore-btn">恢复此快照</button>
@@ -533,6 +534,6 @@
 
     <div class="toast-region" id="toast-region" aria-live="polite"></div>
 
-    <script src="assets/js/app.js?v=20260504-entry-cohort"></script>
+    <script src="assets/js/app.js?v=20260504-cloud-scope"></script>
 </body>
 </html>

@@ -72,6 +72,9 @@ const { chromium } = require(playwrightPath);
     const grade8CohortYear = api.estimateCohortYear(8, '2025-2026');
     const dateStringCohortYear = api.estimateCohortYear(9, '2026-05-04');
     const schoolYear = api.getSchoolYear(new Date('2026-05-04T00:00:00+08:00'));
+    const currentScope = api.getCloudScopeMeta();
+    const matchingWarnings = api.getCloudSnapshotScopeWarnings({ grade: 9, cohort_year: 2022, school_year: '2025-2026' });
+    const mismatchWarnings = api.getCloudSnapshotScopeWarnings({ grade: 8, cohort_year: 2023, school_year: '2025-2026' });
 
     await new Promise((resolve, reject) => {
       const request = indexedDB.open('logic-smoke-db', 1);
@@ -116,7 +119,10 @@ const { chromium } = require(playwrightPath);
       cohortYear,
       grade8CohortYear,
       dateStringCohortYear,
-      schoolYear
+      schoolYear,
+      currentScope,
+      matchingWarnings,
+      mismatchWarnings
     };
   });
 
@@ -143,7 +149,11 @@ const { chromium } = require(playwrightPath);
     || result.cohortYear !== 2022
     || result.grade8CohortYear !== 2023
     || result.dateStringCohortYear !== 2022
-    || result.schoolYear !== '2025-2026') {
+    || result.schoolYear !== '2025-2026'
+    || result.currentScope.cohortYear !== 2022
+    || result.currentScope.grade !== 9
+    || result.matchingWarnings.length !== 0
+    || result.mismatchWarnings.length < 2) {
     throw new Error(`Logic smoke failed: ${JSON.stringify(result, null, 2)}`);
   }
   console.log(JSON.stringify({ ok: true, ...result }, null, 2));

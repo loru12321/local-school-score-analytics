@@ -161,6 +161,7 @@
         cloudConfig: { url: '', anonKey: '' },
         cloudUser: null,
         cloudSnapshots: [],
+        cloudHistoryScope: 'cohort',
         selectedCloudSnapshotId: '',
         anonymizeSalt: 'local-school',
         performanceStats: { lastAnalyzeMs: 0, studentCount: 0, subjectCount: 0 },
@@ -198,7 +199,7 @@
             'export-report-btn', 'history-name', 'save-history-btn', 'history-select', 'comparison-panel',
             'score-band-chart', 'export-html-report-btn', 'export-anonymous-btn', 'clear-local-db-btn', 'privacy-panel',
             'cloud-url', 'cloud-anon-key', 'cloud-email', 'cloud-password', 'cloud-exam-date', 'cloud-school-year', 'save-cloud-config-btn',
-            'cloud-login-btn', 'cloud-logout-btn', 'cloud-sync-btn', 'cloud-refresh-btn', 'cloud-history-select',
+            'cloud-login-btn', 'cloud-logout-btn', 'cloud-sync-btn', 'cloud-refresh-btn', 'cloud-history-scope', 'cloud-history-select',
             'cloud-use-baseline-btn', 'cloud-restore-btn', 'cloud-status', 'cloud-panel'
         ].forEach((id) => {
             els[toCamel(id)] = document.getElementById(id);
@@ -453,10 +454,16 @@
             els.cloudExamDate.addEventListener('change', () => {
                 const examDate = getCloudExamDate();
                 if (els.cloudSchoolYear) els.cloudSchoolYear.value = getSchoolYear(parseDateInput(examDate));
-                renderCloudPanel();
+                refreshCloudHistoryScopeView();
             });
         }
-        if (els.cloudSchoolYear) els.cloudSchoolYear.addEventListener('change', renderCloudPanel);
+        if (els.cloudSchoolYear) els.cloudSchoolYear.addEventListener('change', refreshCloudHistoryScopeView);
+        if (els.cloudHistoryScope) {
+            els.cloudHistoryScope.addEventListener('change', () => {
+                state.cloudHistoryScope = cleanText(els.cloudHistoryScope.value) || 'cohort';
+                refreshCloudHistoryScopeView();
+            });
+        }
         if (els.cloudHistorySelect) {
             els.cloudHistorySelect.addEventListener('change', () => {
                 state.selectedCloudSnapshotId = els.cloudHistorySelect.value;
@@ -2750,6 +2757,7 @@
         const previewExamDate = getCloudExamDate();
         const previewSchoolYear = getCloudSchoolYear(previewExamDate);
         const previewCohortYear = estimateCohortYear(state.grade, previewSchoolYear);
+        syncCloudHistoryScopeOptions();
         if (els.cloudStatus) {
             els.cloudStatus.textContent = connected ? `已登录 ${state.cloudUser.email || ''}` : (configured ? '待登录' : '未配置');
             els.cloudStatus.className = connected ? 'status-pill ok' : 'status-pill warn';
@@ -2768,9 +2776,11 @@
         const rows = [
             ['配置状态', configured ? '已保存 Supabase URL 与 anon key' : '请先填写 Supabase URL 与 anon key'],
             ['登录状态', connected ? `${state.cloudUser.email || state.cloudUser.id}` : '未登录'],
+            ['云端范围', getCloudHistoryScopeLabel()],
             ['云端记录', `${state.cloudSnapshots.length} 条`],
             ['当前届别口径', `${previewSchoolYear} 学年 ${state.grade}年级 = ${previewCohortYear}级（六年级入学年份）`],
-            ['当前选择', selected ? `${formatCloudSnapshotLabel(selected)}，学生 ${selected.student_count || 0} 人` : '无']
+            ['当前选择', selected ? `${formatCloudSnapshotLabel(selected)}，学生 ${selected.student_count || 0} 人` : '无'],
+            ['选择校验', selected ? formatCloudSnapshotScopeStatus(selected) : '无']
         ];
         els.cloudPanel.innerHTML = `
             <div class="detail-grid">
@@ -2778,6 +2788,12 @@
             </div>
             <div class="muted-note">云端快照按登录账号隔离；届别按乡镇系统口径使用“六年级入学年份”，例如 2025-2026 学年 9 年级为 2022级。</div>
         `;
+    }
+
+    function refreshCloudHistoryScopeView() {
+        state.selectedCloudSnapshotId = '';
+        if (state.cloudUser) loadCloudSnapshots();
+        else renderCloudPanel();
     }
 
     function restoreCloudConfig() {
@@ -2953,17 +2969,26 @@
         try {
             await ensureCloudUser();
             const client = getSupabaseClient();
-            const { data, error } = await client
+            const meta = getCloudScopeMeta();
+            let query = client
                 .from('analysis_snapshots')
-                .select('id, school_name, grade, cohort_year, school_year, exam_name, exam_date, student_count, class_count, subject_count, total_max, total_avg, created_at')
+                .select('id, school_name, grade, cohort_year, school_year, exam_name, exam_date, student_count, class_count, subject_count, total_max, total_avg, created_at');
+            if (state.cloudHistoryScope === 'cohort') {
+                query = query.eq('cohort_year', meta.cohortYear);
+            } else if (state.cloudHistoryScope === 'grade') {
+                query = query.eq('cohort_year', meta.cohortYear).eq('grade', meta.grade);
+            }
+            const { data, error } = await query
                 .order('exam_date', { ascending: false })
                 .order('created_at', { ascending: false })
                 .limit(100);
             if (error) throw error;
             state.cloudSnapshots = Array.isArray(data) ? data : [];
-            state.selectedCloudSnapshotId = state.cloudSnapshots[0]?.id || '';
+            state.selectedCloudSnapshotId = state.cloudSnapshots.some((item) => item.id === state.selectedCloudSnapshotId)
+                ? state.selectedCloudSnapshotId
+                : (state.cloudSnapshots[0]?.id || '');
             renderCloudPanel();
-            toast(`已读取 ${state.cloudSnapshots.length} 条云端历史。`, 'ok');
+            toast(`已读取 ${getCloudHistoryScopeLabel()}：${state.cloudSnapshots.length} 条。`, 'ok');
         } catch (error) {
             toast(`读取云端历史失败：${friendlyCloudError(error)}`, 'warn');
             renderCloudPanel();
@@ -2977,7 +3002,7 @@
         const client = getSupabaseClient();
         const { data, error } = await client
             .from('analysis_snapshots')
-            .select('id, exam_name, snapshot')
+            .select('id, grade, cohort_year, school_year, exam_name, exam_date, snapshot')
             .eq('id', id)
             .single();
         if (error) throw error;
@@ -2987,6 +3012,7 @@
     async function useCloudSnapshotAsBaseline() {
         try {
             const record = await getCloudSnapshotRecord();
+            if (!confirmCloudSnapshotScope(record, '作为历史基准')) return;
             const exam = record.snapshot?.exam;
             if (!exam) throw new Error('该云端记录缺少考试快照。');
             state.examHistory = [exam, ...state.examHistory.filter((item) => item.id !== exam.id)].slice(0, HISTORY_LIMIT);
@@ -3002,6 +3028,7 @@
     async function restoreCloudSnapshot() {
         try {
             const record = await getCloudSnapshotRecord();
+            if (!confirmCloudSnapshotScope(record, '恢复完整快照')) return;
             const app = record.snapshot?.app;
             if (!app) throw new Error('该云端记录缺少完整分析快照。');
             applyLocalSnapshot(app);
@@ -3015,6 +3042,67 @@
         if (!item) return '';
         const date = item.exam_date || cleanText(item.created_at).slice(0, 10);
         return `${date} · ${item.exam_name} · ${item.grade}年级 · ${item.cohort_year}级`;
+    }
+
+    function syncCloudHistoryScopeOptions() {
+        if (!els.cloudHistoryScope) return;
+        const meta = getCloudScopeMeta();
+        const options = [
+            ['cohort', `当前届别：${meta.cohortYear}级`],
+            ['grade', `当前年级：${meta.grade}年级 ${meta.cohortYear}级`],
+            ['all', '全部云端记录']
+        ];
+        const nextScope = options.some(([value]) => value === state.cloudHistoryScope) ? state.cloudHistoryScope : 'cohort';
+        state.cloudHistoryScope = nextScope;
+        els.cloudHistoryScope.innerHTML = options.map(([value, label]) => `<option value="${value}">${escapeHtml(label)}</option>`).join('');
+        els.cloudHistoryScope.value = nextScope;
+    }
+
+    function getCloudScopeMeta() {
+        const examDate = getCloudExamDate();
+        const schoolYear = getCloudSchoolYear(examDate);
+        return {
+            grade: Number(state.grade || 9),
+            schoolYear,
+            examDate,
+            cohortYear: estimateCohortYear(state.grade, schoolYear)
+        };
+    }
+
+    function getCloudHistoryScopeLabel() {
+        const meta = getCloudScopeMeta();
+        if (state.cloudHistoryScope === 'all') return '全部云端记录';
+        if (state.cloudHistoryScope === 'grade') return `${meta.grade}年级 ${meta.cohortYear}级`;
+        return `${meta.cohortYear}级`;
+    }
+
+    function formatCloudSnapshotScopeStatus(record) {
+        const warnings = getCloudSnapshotScopeWarnings(record);
+        return warnings.length ? `需确认：${warnings.join('；')}` : '与当前届别口径一致';
+    }
+
+    function confirmCloudSnapshotScope(record, actionLabel) {
+        const warnings = getCloudSnapshotScopeWarnings(record);
+        if (!warnings.length) return true;
+        const message = `${actionLabel}前请确认：\n${warnings.join('\n')}\n\n继续使用这条云端历史吗？`;
+        return window.confirm(message);
+    }
+
+    function getCloudSnapshotScopeWarnings(record) {
+        const meta = getCloudScopeMeta();
+        const warnings = [];
+        if (!record) return ['未读取到云端历史元数据'];
+        if (Number(record.cohort_year) !== meta.cohortYear) {
+            warnings.push(`届别不同，快照为 ${record.cohort_year || '未知'}级，当前为 ${meta.cohortYear}级`);
+        }
+        if (Number(record.grade) !== meta.grade) {
+            warnings.push(`年级不同，快照为 ${record.grade || '未知'}年级，当前为 ${meta.grade}年级`);
+        }
+        const recordSchoolYear = cleanText(record.school_year);
+        if (recordSchoolYear && recordSchoolYear !== meta.schoolYear) {
+            warnings.push(`学年不同，快照为 ${recordSchoolYear}，当前为 ${meta.schoolYear}`);
+        }
+        return warnings;
     }
 
     function getSchoolYear(date = new Date()) {
@@ -4921,6 +5009,8 @@ ${htmlTable('教师解释', buildTeacherExplanationExportRows())}
         buildCloudSnapshotPayload,
         estimateCohortYear,
         getSchoolYear,
+        getCloudScopeMeta,
+        getCloudSnapshotScopeWarnings,
         buildExamComparisonRows,
         getEvaluationWeights,
         getStudentMatchKeys,
