@@ -69,6 +69,8 @@ const { chromium } = require(playwrightPath);
     const comparisonRows = api.buildExamComparisonRows();
     const cloudPayload = api.buildCloudSnapshotPayload('云端测试', { id: '00000000-0000-0000-0000-000000000001' });
     const cohortYear = api.estimateCohortYear(9, new Date('2026-05-04T00:00:00+08:00'));
+    const grade8CohortYear = api.estimateCohortYear(8, '2025-2026');
+    const dateStringCohortYear = api.estimateCohortYear(9, '2026-05-04');
     const schoolYear = api.getSchoolYear(new Date('2026-05-04T00:00:00+08:00'));
 
     await new Promise((resolve, reject) => {
@@ -112,6 +114,8 @@ const { chromium } = require(playwrightPath);
         hasExamSnapshot: Boolean(cloudPayload.snapshot?.exam?.students?.length)
       },
       cohortYear,
+      grade8CohortYear,
+      dateStringCohortYear,
       schoolYear
     };
   });
@@ -131,12 +135,14 @@ const { chromium } = require(playwrightPath);
     || !result.reportHasSubjectHeader
     || !result.comparisonHasStudentGain
     || result.cloudPayload.grade !== 9
-    || result.cloudPayload.cohortYear !== 2026
+    || result.cloudPayload.cohortYear !== 2022
     || result.cloudPayload.schoolYear !== '2025-2026'
     || result.cloudPayload.owner !== '00000000-0000-0000-0000-000000000001'
     || !result.cloudPayload.hasAppSnapshot
     || !result.cloudPayload.hasExamSnapshot
-    || result.cohortYear !== 2026
+    || result.cohortYear !== 2022
+    || result.grade8CohortYear !== 2023
+    || result.dateStringCohortYear !== 2022
     || result.schoolYear !== '2025-2026') {
     throw new Error(`Logic smoke failed: ${JSON.stringify(result, null, 2)}`);
   }

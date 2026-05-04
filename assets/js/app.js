@@ -197,7 +197,7 @@
             'teacher-explain-select', 'teacher-explain-panel',
             'export-report-btn', 'history-name', 'save-history-btn', 'history-select', 'comparison-panel',
             'score-band-chart', 'export-html-report-btn', 'export-anonymous-btn', 'clear-local-db-btn', 'privacy-panel',
-            'cloud-url', 'cloud-anon-key', 'cloud-email', 'cloud-password', 'save-cloud-config-btn',
+            'cloud-url', 'cloud-anon-key', 'cloud-email', 'cloud-password', 'cloud-exam-date', 'cloud-school-year', 'save-cloud-config-btn',
             'cloud-login-btn', 'cloud-logout-btn', 'cloud-sync-btn', 'cloud-refresh-btn', 'cloud-history-select',
             'cloud-use-baseline-btn', 'cloud-restore-btn', 'cloud-status', 'cloud-panel'
         ].forEach((id) => {
@@ -449,6 +449,14 @@
         if (els.cloudLogoutBtn) els.cloudLogoutBtn.addEventListener('click', logoutCloud);
         if (els.cloudSyncBtn) els.cloudSyncBtn.addEventListener('click', syncCurrentExamToCloud);
         if (els.cloudRefreshBtn) els.cloudRefreshBtn.addEventListener('click', loadCloudSnapshots);
+        if (els.cloudExamDate) {
+            els.cloudExamDate.addEventListener('change', () => {
+                const examDate = getCloudExamDate();
+                if (els.cloudSchoolYear) els.cloudSchoolYear.value = getSchoolYear(parseDateInput(examDate));
+                renderCloudPanel();
+            });
+        }
+        if (els.cloudSchoolYear) els.cloudSchoolYear.addEventListener('change', renderCloudPanel);
         if (els.cloudHistorySelect) {
             els.cloudHistorySelect.addEventListener('change', () => {
                 state.selectedCloudSnapshotId = els.cloudHistorySelect.value;
@@ -2736,8 +2744,12 @@
         if (!els.cloudPanel) return;
         if (els.cloudUrl) els.cloudUrl.value = state.cloudConfig.url || '';
         if (els.cloudAnonKey) els.cloudAnonKey.value = state.cloudConfig.anonKey || '';
+        ensureCloudMetaInputs();
         const configured = hasCloudConfig();
         const connected = Boolean(state.cloudUser);
+        const previewExamDate = getCloudExamDate();
+        const previewSchoolYear = getCloudSchoolYear(previewExamDate);
+        const previewCohortYear = estimateCohortYear(state.grade, previewSchoolYear);
         if (els.cloudStatus) {
             els.cloudStatus.textContent = connected ? `已登录 ${state.cloudUser.email || ''}` : (configured ? '待登录' : '未配置');
             els.cloudStatus.className = connected ? 'status-pill ok' : 'status-pill warn';
@@ -2757,13 +2769,14 @@
             ['配置状态', configured ? '已保存 Supabase URL 与 anon key' : '请先填写 Supabase URL 与 anon key'],
             ['登录状态', connected ? `${state.cloudUser.email || state.cloudUser.id}` : '未登录'],
             ['云端记录', `${state.cloudSnapshots.length} 条`],
+            ['当前届别口径', `${previewSchoolYear} 学年 ${state.grade}年级 = ${previewCohortYear}级（六年级入学年份）`],
             ['当前选择', selected ? `${formatCloudSnapshotLabel(selected)}，学生 ${selected.student_count || 0} 人` : '无']
         ];
         els.cloudPanel.innerHTML = `
             <div class="detail-grid">
                 ${rows.map((row) => detailItem(row[0], row[1])).join('')}
             </div>
-            <div class="muted-note">云端快照按登录账号隔离；年级升级通过“届别/学年/考试日期”追踪，不另做年级入口页。</div>
+            <div class="muted-note">云端快照按登录账号隔离；届别按乡镇系统口径使用“六年级入学年份”，例如 2025-2026 学年 9 年级为 2022级。</div>
         `;
     }
 
@@ -2903,13 +2916,15 @@
         const exam = buildExamSnapshot(name);
         const app = buildLocalSnapshot();
         const totalMetrics = metricSummary(getAnalysisStudents().map((student) => student.total), state.thresholds.total || {}, getTotalMaxScore());
-        const examDate = new Date().toISOString().slice(0, 10);
+        const examDate = getCloudExamDate();
+        const schoolYear = getCloudSchoolYear(examDate);
+        const cohortYear = estimateCohortYear(state.grade, schoolYear);
         return {
             owner_id: user.id,
             school_name: state.activeSchool || '本校',
             grade: Number(state.grade || 9),
-            cohort_year: estimateCohortYear(state.grade, new Date()),
-            school_year: getSchoolYear(new Date()),
+            cohort_year: cohortYear,
+            school_year: schoolYear,
             exam_name: name,
             exam_date: examDate,
             student_count: getAnalysisStudents().length,
@@ -2921,6 +2936,13 @@
             snapshot: {
                 version: CLOUD_SNAPSHOT_VERSION,
                 savedAt: new Date().toISOString(),
+                cohortPolicy: {
+                    type: 'entry_year',
+                    label: '六年级入学年份',
+                    grade: Number(state.grade || 9),
+                    schoolYear,
+                    cohortYear
+                },
                 exam,
                 app
             }
@@ -2992,19 +3014,90 @@
     function formatCloudSnapshotLabel(item) {
         if (!item) return '';
         const date = item.exam_date || cleanText(item.created_at).slice(0, 10);
-        return `${date} · ${item.exam_name} · ${item.grade}年级 · ${item.cohort_year}届`;
+        return `${date} · ${item.exam_name} · ${item.grade}年级 · ${item.cohort_year}级`;
     }
 
     function getSchoolYear(date = new Date()) {
-        const year = date.getFullYear();
-        const start = date.getMonth() + 1 >= 9 ? year : year - 1;
+        const source = date instanceof Date ? date : parseDateInput(date);
+        const year = source.getFullYear();
+        const start = source.getMonth() + 1 >= 9 ? year : year - 1;
         return `${start}-${start + 1}`;
     }
 
-    function estimateCohortYear(grade = state.grade, date = new Date()) {
+    function estimateCohortYear(grade = state.grade, dateOrSchoolYear = new Date()) {
+        const schoolStart = getSchoolYearStart(dateOrSchoolYear);
+        return schoolStart - (Number(grade || 9) - 6);
+    }
+
+    function ensureCloudMetaInputs() {
+        const today = new Date();
+        if (els.cloudExamDate && !cleanText(els.cloudExamDate.value)) {
+            els.cloudExamDate.value = formatDateInput(today);
+        }
+        if (els.cloudSchoolYear && !cleanText(els.cloudSchoolYear.value)) {
+            els.cloudSchoolYear.value = getSchoolYear(today);
+        }
+    }
+
+    function getCloudExamDate() {
+        const value = cleanText(els.cloudExamDate?.value);
+        return /^\d{4}-\d{2}-\d{2}$/.test(value) ? value : formatDateInput(new Date());
+    }
+
+    function getCloudSchoolYear(examDate = getCloudExamDate()) {
+        return normalizeSchoolYear(els.cloudSchoolYear?.value) || getSchoolYear(parseDateInput(examDate));
+    }
+
+    function normalizeSchoolYear(value) {
+        const text = cleanText(value);
+        if (!text) return '';
+        let match = text.match(/(20\d{2})\D+(20\d{2})/);
+        if (match) {
+            const start = Number(match[1]);
+            const end = Number(match[2]);
+            if (Number.isFinite(start) && Number.isFinite(end) && end === start + 1) return `${start}-${end}`;
+        }
+        match = text.match(/(20\d{2})/);
+        if (match) {
+            const start = Number(match[1]);
+            return `${start}-${start + 1}`;
+        }
+        return '';
+    }
+
+    function getSchoolYearStart(dateOrSchoolYear = new Date()) {
+        if (dateOrSchoolYear instanceof Date) {
+            const year = dateOrSchoolYear.getFullYear();
+            return dateOrSchoolYear.getMonth() + 1 >= 9 ? year : year - 1;
+        }
+        const text = cleanText(dateOrSchoolYear);
+        if (/^\d{4}-\d{1,2}-\d{1,2}/.test(text)) {
+            const date = parseDateInput(text);
+            const year = date.getFullYear();
+            return date.getMonth() + 1 >= 9 ? year : year - 1;
+        }
+        const normalized = normalizeSchoolYear(text);
+        if (normalized) return Number(normalized.slice(0, 4));
+        const date = parseDateInput(text);
         const year = date.getFullYear();
-        const schoolStart = date.getMonth() + 1 >= 9 ? year : year - 1;
-        return schoolStart + (10 - Number(grade || 9));
+        return date.getMonth() + 1 >= 9 ? year : year - 1;
+    }
+
+    function parseDateInput(value) {
+        if (value instanceof Date && !Number.isNaN(value.getTime())) return value;
+        const text = cleanText(value);
+        const match = text.match(/^(\d{4})-(\d{1,2})-(\d{1,2})/);
+        if (match) return new Date(Number(match[1]), Number(match[2]) - 1, Number(match[3]));
+        const date = new Date(text);
+        return Number.isNaN(date.getTime()) ? new Date() : date;
+    }
+
+    function formatDateInput(date = new Date()) {
+        const source = parseDateInput(date);
+        const y = source.getFullYear();
+        const m = String(source.getMonth() + 1).padStart(2, '0');
+        const d = String(source.getDate()).padStart(2, '0');
+        return `${y}-${m}-${d}`;
     }
 
     function friendlyCloudError(error) {
